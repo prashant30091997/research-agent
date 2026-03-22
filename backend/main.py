@@ -55,6 +55,7 @@ class ChatRequest(BaseModel):
     tool_models: Optional[Dict[str, str]] = None  # per-tool model mapping
     drive_token: Optional[str] = None  # Google OAuth token from frontend
     working_folder_id: Optional[str] = None
+    selected_files: Optional[List[Dict]] = None  # files user chose from Drive
 
 class ToolRequest(BaseModel):
     tool: str
@@ -89,6 +90,7 @@ async def chat(req: ChatRequest):
             tool_models=req.tool_models,
             drive_token=req.drive_token,
             working_folder_id=req.working_folder_id,
+            selected_files=req.selected_files,
         )
         
         # Auto-save session
@@ -123,6 +125,7 @@ async def chat_stream(req: ChatRequest):
                 tool_models=req.tool_models,
                 drive_token=req.drive_token,
                 working_folder_id=req.working_folder_id,
+                selected_files=req.selected_files,
             ):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:

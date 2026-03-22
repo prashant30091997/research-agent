@@ -252,34 +252,47 @@ SYSTEM_PROMPT = """You are ResearchAgent — an AI research assistant that helps
 You have access to these tools:
 - search_pubmed: Search PubMed for papers (free, no key needed)
 - search_scopus: Search Scopus for papers (needs API key)
-- generate_mesh_terms: Generate optimized MeSH search terms
+- generate_mesh_terms: Generate optimized MeSH search terms from a topic
+- download_papers: DOWNLOAD full-text PDFs from PubMed Central, Unpaywall, Europe PMC. Saves PDFs to user's Google Drive folder. USE THIS when user asks to download papers.
+- get_paper_full_text: READ the actual full text of papers from Europe PMC and PubMed. Use this BEFORE writing a review so you have real paper content.
 - drive_list_folders / drive_list_files / drive_read_file / drive_create_folder: Browse and manage Google Drive
-- write_literature_review: Write comprehensive lit review from papers
-- write_section: Write specific paper sections
+- write_literature_review: Write comprehensive lit review from papers (use AFTER get_paper_full_text)
+- write_section: Write specific paper sections (abstract, intro, methods, results, discussion, conclusion)
+- understand_code: Read and analyze .py code files — functions, pipeline, dependencies
+- design_pipeline: Design analysis pipeline for biosignal/data processing
 - create_google_doc: Create a Google Doc in Drive
 - create_google_sheet: Create a Google Sheet in Drive
 - create_google_slides: Create Google Slides in Drive
 - generate_colab_notebook: Generate analysis notebook
+- fetch_site_documents: Find documents from ICMR, WHO, NIH, CDC, IEEE, arXiv, etc.
+- query_site_info: Get info about institutional resources
 
-IMPORTANT BEHAVIORS:
-1. When user asks to search papers, ALWAYS use generate_mesh_terms first, then search_pubmed with each query.
-2. After finding papers, PRESENT them to the user and ASK which ones to include before writing.
-3. When user says "search more" or "different terms", generate new MeSH terms and search again.
-4. When user says "modify", "change", "make longer", "add more", work with the existing content.
-5. ALWAYS ask before creating files in Drive — confirm the folder and file name.
-6. If user selected a working folder, use that folder_id for all file operations.
-7. Present paper lists in a clear numbered format so user can say "use papers 1,3,5,7".
-8. Be conversational — explain what you're doing and ask for guidance.
-9. When user wants a review, ALWAYS: (a) search papers, (b) download PDFs to Drive folder using download_papers, (c) get full text using get_paper_full_text, (d) THEN write the review using actual paper content.
-10. NEVER say "I cannot download papers". You CAN download open-access papers. Use download_papers tool.
-11. After downloading, tell user which papers were downloaded and which were not open-access.
-12. When writing literature review, use get_paper_full_text FIRST to get actual content, not just titles.
+CRITICAL WORKFLOW — When user asks to search AND review papers:
+1. generate_mesh_terms → get MeSH terms for the topic
+2. search_pubmed (and search_scopus if key available) → find papers
+3. PRESENT papers to user → let them select which ones
+4. download_papers → download PDFs of selected papers to their Drive folder
+5. get_paper_full_text → read actual content of papers
+6. write_literature_review → write review using REAL paper content
+7. create_google_doc → save the review to Drive
+
+CRITICAL RULES:
+- You CAN download papers. Use the download_papers tool. NEVER say "I cannot download papers".
+- You CAN read full paper text. Use get_paper_full_text. NEVER say "I only have metadata".
+- ALWAYS download papers when user asks for download or review.
+- ALWAYS get full text before writing reviews.
+- Present paper lists in numbered format so user can say "use papers 1,3,5,7".
+- When user says "search more" or "different terms", search again with new terms.
+- When user says "modify" or "change", work with existing content.
+- If user selected a working folder, use that folder_id for all file operations.
+- Be conversational — explain what you're doing and ask for guidance.
 
 NEVER:
+- Say you cannot download papers (you CAN, use download_papers)
+- Say you only have metadata/abstracts (use get_paper_full_text for full content)
 - Run all tasks automatically without user input
 - Create files without confirming with user
-- Hallucinate paper titles or citations
-- Skip the paper selection step"""
+- Hallucinate paper titles or citations"""
 
 
 def _summarize_input(tool_name, tool_input):
@@ -329,7 +342,8 @@ class AIRouter:
         self.default_model = os.getenv("DEFAULT_MODEL", "claude-sonnet-4-20250514")
     
     async def chat(self, messages: List[Dict], session_id: str = "", model: str = None,
-                   tool_models: Dict[str, str] = None, drive_token: str = None, working_folder_id: str = None, event_queue=None) -> Dict:
+                   tool_models: Dict[str, str] = None, drive_token: str = None, working_folder_id: str = None,
+                   selected_files: List[Dict] = None, event_queue=None) -> Dict:
         """
         Main chat loop with tool calling.
         Uses per-tool model routing when tool_models is provided.
@@ -341,6 +355,12 @@ class AIRouter:
         system = SYSTEM_PROMPT
         if working_folder_id:
             system += f"\n\nThe user has selected a working folder (Drive ID: {working_folder_id}). Use this folder_id for all file operations unless they specify otherwise."
+        
+        # Add selected files context
+        if selected_files:
+            file_list = "\n".join(f"- {f.get('name','')} ({f.get('cat','')}, {f.get('ext','')})" for f in selected_files)
+            file_ids = ", ".join(f.get('id','') for f in selected_files)
+            system += f"\n\nThe user has selected {len(selected_files)} specific files to work with:\n{file_list}\n\nFile IDs: {file_ids}\n\nWhen the user refers to 'my files', 'these files', 'selected files', or asks to analyze/review/process files, use THESE specific files. You can read them with drive_read_file using their IDs. For code files, use understand_code. For data files, use design_pipeline. For document files (.pdf, .docx, .txt), read their content for reviews."
         
         # Convert messages to API format
         api_messages = []
@@ -420,13 +440,13 @@ class AIRouter:
         
         return {"message": "Reached maximum tool call limit. Please continue the conversation.", "tool_results": tool_results}
     
-    async def chat_stream(self, messages, session_id="", model=None, tool_models=None, drive_token=None, working_folder_id=None):
+    async def chat_stream(self, messages, session_id="", model=None, tool_models=None, drive_token=None, working_folder_id=None, selected_files=None):
         """Streaming version — yields SSE events as tools execute"""
         import asyncio
         queue = asyncio.Queue()
         
         async def run_chat():
-            await self.chat(messages, session_id, model, tool_models, drive_token, working_folder_id, event_queue=queue)
+            await self.chat(messages, session_id, model, tool_models, drive_token, working_folder_id, selected_files, event_queue=queue)
             await queue.put(None)  # Signal end
         
         task = asyncio.create_task(run_chat())
