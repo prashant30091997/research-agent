@@ -476,49 +476,64 @@ export default function App() {
   // ── Load Sessions ──
   const loadSessions = async () => {
     let allSessions = [];
-    
-    // Load local sessions from backend
+
+    // 1. Load local sessions from backend (may be empty after Colab restart)
     try {
       const r = await fetch(`${backendUrl}/api/session/list`);
       const d = await r.json();
-      allSessions = d.sessions || [];
+      allSessions = (d.sessions || []).map(s => ({ ...s, source: "local" }));
     } catch { }
-    
-    // Load from Drive history folder (this is the MAIN source since Colab restarts lose local files)
+
+    // 2. Load sessions directly from Drive history folder (the PERSISTENT source)
     if (driveToken && historyFolder?.id) {
       try {
-        const dr = await api("/api/session/list_drive", { drive_token: driveToken, history_folder_id: historyFolder.id });
-        const driveSessions = dr.sessions || [];
-        const localIds = new Set(allSessions.map(s => s.id));
-        for (const ds of driveSessions) {
-          if (!localIds.has(ds.id)) {
-            allSessions.push({ ...ds, fromDrive: true });
-          } else {
-            const local = allSessions.find(s => s.id === ds.id);
-            if (local) local.drive_synced = true;
-          }
-        }
-      } catch { }
-    } else if (driveToken && !historyFolder) {
-      // No history folder set — try to find one automatically
-      try {
-        const q = "name='ResearchAgent_History' and mimeType='application/vnd.google-apps.folder' and trashed=false";
-        const r = await fetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=1&supportsAllDrives=true&includeItemsFromAllDrives=true`, {
+        // List all subfolders in history folder
+        const q = `'${historyFolder.id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+        const r = await fetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name,createdTime)&pageSize=50&orderBy=createdTime desc&supportsAllDrives=true&includeItemsFromAllDrives=true`, {
           headers: { "Authorization": `Bearer ${driveToken}` },
         });
-        const d = await r.json();
-        if (d.files?.length > 0) {
-          const folder = d.files[0];
-          setHistoryFolder(folder);
-          localStorage.setItem("ra_history_folder", JSON.stringify(folder));
-          // Now load sessions from it
-          const dr = await api("/api/session/list_drive", { drive_token: driveToken, history_folder_id: folder.id });
-          allSessions = [...allSessions, ...(dr.sessions || []).map(s => ({ ...s, fromDrive: true }))];
+        const folders = (await r.json()).files || [];
+
+        for (const folder of folders.slice(0, 30)) {
+          // Find session.json inside each folder
+          const fq = `'${folder.id}' in parents and name='session.json' and trashed=false`;
+          const fr = await fetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(fq)}&fields=files(id,name)&pageSize=1`, {
+            headers: { "Authorization": `Bearer ${driveToken}` },
+          });
+          const files = (await fr.json()).files || [];
+          if (files.length > 0) {
+            // Read the session.json to get title and message count
+            try {
+              const cr = await fetch(`https://www.googleapis.com/drive/v3/files/${files[0].id}?alt=media`, {
+                headers: { "Authorization": `Bearer ${driveToken}` },
+              });
+              const session = await cr.json();
+              const localMatch = allSessions.find(s => s.id === session.id);
+              if (localMatch) {
+                localMatch.drive_synced = true;
+                localMatch.drive_file_id = files[0].id;
+                localMatch.drive_folder_id = folder.id;
+              } else {
+                allSessions.push({
+                  id: session.id || folder.name,
+                  title: session.title || folder.name,
+                  created: session.created || 0,
+                  created_str: session.created_str || "",
+                  updated_str: session.updated_str || "",
+                  message_count: (session.messages || []).length,
+                  drive_file_id: files[0].id,
+                  drive_folder_id: folder.id,
+                  fromDrive: true,
+                  source: "drive",
+                });
+              }
+            } catch { }
+          }
         }
-      } catch { }
+      } catch (e) { console.error("Drive session load error:", e); }
     }
-    
-    // Sort by most recent first
+
+    // Sort by most recent
     allSessions.sort((a, b) => (b.created || 0) - (a.created || 0));
     setSessions(allSessions);
   };
@@ -526,18 +541,22 @@ export default function App() {
   const loadSession = async (session) => {
     try {
       let data;
-      if (session.fromDrive && session.drive_file_id) {
-        // Load from Drive
-        data = await api("/api/session/load", { session_id: session.id, drive_token: driveToken, drive_file_id: session.drive_file_id });
+      if (session.drive_file_id && driveToken) {
+        // Load from Drive directly
+        const r = await fetch(`https://www.googleapis.com/drive/v3/files/${session.drive_file_id}?alt=media`, {
+          headers: { "Authorization": `Bearer ${driveToken}` },
+        });
+        data = await r.json();
       } else {
+        // Load from backend local
         data = await api("/api/session/load", { session_id: session.id });
       }
-      if (data.messages) {
+      if (data && data.messages) {
         setSessionId(data.id || session.id);
         setMessages(data.messages);
         setShowHistory(false);
       }
-    } catch { }
+    } catch (e) { console.error("Load session error:", e); }
   };
 
   // ── Render Tool Results Inline ──
