@@ -55,18 +55,28 @@ async def search_pubmed(query: str, max_results: int = 15) -> list:
             if not p:
                 continue
             authors = [a.get("name", "") for a in (p.get("authors") or [])]
+            # Extract DOI — try elocationid first, then articleids
+            doi = ""
+            eloc = p.get("elocationid") or ""
+            if "doi:" in eloc.lower():
+                doi = eloc.lower().replace("doi:", "").replace("doi: ", "").strip()
+            if not doi:
+                for aid in (p.get("articleids") or []):
+                    if aid.get("idtype") == "doi":
+                        doi = aid.get("value", "")
+                        break
             papers.append({
                 "pmid": pmid,
                 "title": p.get("title", "Untitled"),
                 "journal": p.get("source") or p.get("fulljournalname", ""),
                 "year": (p.get("pubdate") or "")[:4],
                 "authors": ", ".join(authors[:3]) + (" et al." if len(authors) > 3 else ""),
-                "doi": (p.get("elocationid") or "").replace("doi: ", ""),
+                "doi": doi,
                 "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
                 "db": "PubMed",
                 "relevance": max(50, 99 - i * 3),
                 "abstract": abstracts.get(pmid, ""),
-                "pdf_url": None,  # Will be filled by Europe PMC check
+                "pdf_url": None,  # Will be filled by Europe PMC + Unpaywall check
                 "pmcid": None,
             })
 
@@ -77,45 +87,90 @@ async def search_pubmed(query: str, max_results: int = 15) -> list:
 
 
 async def _enrich_with_europmc(client, papers: list):
-    """For each paper, check Europe PMC if open-access PDF exists. Attaches pdf_url directly."""
+    """For each paper, find open-access PDF URL. Tries DOI first (most universal), then PMID, then Unpaywall."""
     for paper in papers:
+        doi = paper.get("doi", "")
         pmid = paper.get("pmid", "")
-        if not pmid:
+        
+        if not doi and not pmid:
             continue
-        try:
-            # Search Europe PMC by exact PMID
-            r = await client.get(EUROPMC_SEARCH, params={
-                "query": f"EXT_ID:{pmid} SRC:MED",
-                "format": "json", "resultType": "core", "pageSize": 1
-            })
-            results = r.json().get("resultList", {}).get("result", [])
-            if not results:
-                continue
-
-            res = results[0]
-            # Verify PMID matches exactly
-            if str(res.get("pmid", "")) != str(pmid):
-                continue
-
-            paper["pmcid"] = res.get("pmcid", "")
-
-            if res.get("isOpenAccess") == "Y":
-                ftl = res.get("fullTextUrlList", {}).get("fullTextUrl", [])
-                for ft in ftl:
-                    if ft.get("documentStyle") == "pdf" and ft.get("availability") == "Open access":
-                        paper["pdf_url"] = ft.get("url")
-                        break
-                # Fallback: PMC render
-                if not paper["pdf_url"] and res.get("pmcid"):
-                    paper["pdf_url"] = f"https://europepmc.org/backend/ptpmcrender.fcgi?accid={res['pmcid']}&blobtype=pdf"
-
-            # Fill abstract if missing
-            if not paper["abstract"] and res.get("abstractText"):
-                paper["abstract"] = res["abstractText"][:2000]
-
-            await asyncio.sleep(0.5)  # Be polite to Europe PMC
-        except:
-            continue
+        
+        # ── Strategy 1: Europe PMC by DOI (most reliable for finding OA versions) ──
+        if doi:
+            try:
+                r = await client.get(EUROPMC_SEARCH, params={
+                    "query": f"DOI:{doi}",
+                    "format": "json", "resultType": "core", "pageSize": 1
+                })
+                results = r.json().get("resultList", {}).get("result", [])
+                if results:
+                    res = results[0]
+                    paper["pmcid"] = res.get("pmcid", "")
+                    if res.get("isOpenAccess") == "Y":
+                        ftl = res.get("fullTextUrlList", {}).get("fullTextUrl", [])
+                        for ft in ftl:
+                            if ft.get("documentStyle") == "pdf" and ft.get("availability") == "Open access":
+                                paper["pdf_url"] = ft.get("url")
+                                break
+                        if not paper["pdf_url"] and res.get("pmcid"):
+                            paper["pdf_url"] = f"https://europepmc.org/backend/ptpmcrender.fcgi?accid={res['pmcid']}&blobtype=pdf"
+                    if not paper["abstract"] and res.get("abstractText"):
+                        paper["abstract"] = res["abstractText"][:2000]
+                    if paper["pdf_url"]:
+                        await asyncio.sleep(0.5)
+                        continue
+            except:
+                pass
+        
+        # ── Strategy 2: Europe PMC by PMID (fallback if DOI didn't work) ──
+        if pmid and not paper.get("pdf_url"):
+            try:
+                r = await client.get(EUROPMC_SEARCH, params={
+                    "query": f"EXT_ID:{pmid} SRC:MED",
+                    "format": "json", "resultType": "core", "pageSize": 1
+                })
+                results = r.json().get("resultList", {}).get("result", [])
+                if results:
+                    res = results[0]
+                    if str(res.get("pmid", "")) == str(pmid):
+                        paper["pmcid"] = res.get("pmcid", "")
+                        if res.get("isOpenAccess") == "Y":
+                            ftl = res.get("fullTextUrlList", {}).get("fullTextUrl", [])
+                            for ft in ftl:
+                                if ft.get("documentStyle") == "pdf" and ft.get("availability") == "Open access":
+                                    paper["pdf_url"] = ft.get("url")
+                                    break
+                            if not paper["pdf_url"] and res.get("pmcid"):
+                                paper["pdf_url"] = f"https://europepmc.org/backend/ptpmcrender.fcgi?accid={res['pmcid']}&blobtype=pdf"
+                        if not paper["abstract"] and res.get("abstractText"):
+                            paper["abstract"] = res["abstractText"][:2000]
+                        if paper["pdf_url"]:
+                            await asyncio.sleep(0.5)
+                            continue
+            except:
+                pass
+        
+        # ── Strategy 3: Unpaywall by DOI (finds legal OA from publishers, repositories) ──
+        if doi and not paper.get("pdf_url"):
+            try:
+                r = await client.get(f"https://api.unpaywall.org/v2/{doi}", params={
+                    "email": "research-agent@example.com"
+                })
+                if r.status_code == 200:
+                    d = r.json()
+                    best = d.get("best_oa_location") or {}
+                    url = best.get("url_for_pdf") or best.get("url_for_landing_page")
+                    if url:
+                        paper["pdf_url"] = url
+                    else:
+                        for loc in d.get("oa_locations", []):
+                            if loc.get("url_for_pdf"):
+                                paper["pdf_url"] = loc["url_for_pdf"]
+                                break
+            except:
+                pass
+        
+        await asyncio.sleep(0.5)  # Be polite
 
 
 async def search_pubmed_mesh(topic: str, ai_router, max_results: int = 15) -> dict:
