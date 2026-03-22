@@ -38,8 +38,7 @@ export default function App() {
     { key: "chat", label: "💬 Chat / General", desc: "Default model for conversation" },
     { key: "search_pubmed", label: "🔬 PubMed Search", desc: "MeSH terms + paper search" },
     { key: "search_scopus", label: "🔬 Scopus Search", desc: "Elsevier database search" },
-    { key: "download_papers", label: "⬇️ Download Papers", desc: "Find & download open-access PDFs" },
-    { key: "search_and_download", label: "🔬⬇️ Search & Download", desc: "All-in-one: search Europe PMC + download PDFs" },
+    { key: "download_papers", label: "⬇️ Download Papers", desc: "Download open-access PDFs via Europe PMC" },
     { key: "get_paper_full_text", label: "📖 Read Full Text", desc: "Extract full text from papers" },
     { key: "write_literature_review", label: "📝 Literature Review", desc: "Write comprehensive review" },
     { key: "write_section", label: "✍️ Write Section", desc: "Results, discussion, methodology" },
@@ -58,7 +57,6 @@ export default function App() {
     search_pubmed: "gemini-2.5-flash",
     search_scopus: "gemini-2.5-flash",
     download_papers: "gemini-2.5-flash-lite",
-    search_and_download: "gemini-2.5-flash",
     get_paper_full_text: "gemini-2.5-flash-lite",
     write_literature_review: "gemini-3.1-pro-preview",
     write_section: "gemini-3.1-pro-preview",
@@ -295,7 +293,7 @@ export default function App() {
 
   const TOOL_ICONS = {
     search_pubmed: "🔬", search_scopus: "🔬", generate_mesh_terms: "🧬",
-    download_papers: "⬇️", get_paper_full_text: "📖", search_and_download: "🔬",
+    download_papers: "⬇️", get_paper_full_text: "📖",
     drive_list_folders: "📁", drive_list_files: "📂", drive_read_file: "📄", drive_create_folder: "📁",
     write_literature_review: "📝", write_section: "✍️",
     understand_code: "🧠", design_pipeline: "🏗️",
