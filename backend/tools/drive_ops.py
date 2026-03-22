@@ -96,6 +96,39 @@ class DriveOps:
             if not file_id: return {"error": d.get("error", {}).get("message", "Upload failed")}
             return {"id": file_id, "name": name}
     
+    async def find_file(self, name: str, parent_id: str = None) -> str:
+        """Find a file by name in a folder. Returns file ID or None."""
+        q = f"name='{name}' and trashed=false"
+        if parent_id: q += f" and '{parent_id}' in parents"
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.get(DRIVE_API, params={
+                "q": q, "fields": "files(id,name)", "pageSize": 1,
+                "supportsAllDrives": "true", "includeItemsFromAllDrives": "true",
+            }, headers=self.headers)
+            files = r.json().get("files", [])
+            return files[0]["id"] if files else None
+    
+    async def update_file(self, file_id: str, content: str, mime_type: str = "text/html") -> dict:
+        """Update an EXISTING file's content (overwrites). Works for Google Docs/Sheets/Slides."""
+        boundary = f"----RAupd{id(content)}"
+        body = (
+            f"--{boundary}\r\n"
+            f"Content-Type: application/json; charset=UTF-8\r\n\r\n"
+            f"{{}}\r\n"
+            f"--{boundary}\r\n"
+            f"Content-Type: {mime_type}; charset=UTF-8\r\n\r\n"
+            f"{content}\r\n"
+            f"--{boundary}--"
+        )
+        async with httpx.AsyncClient(timeout=60) as c:
+            r = await c.patch(
+                f"{UPLOAD_API}/{file_id}?uploadType=multipart",
+                content=body.encode(),
+                headers={**self.headers, "Content-Type": f"multipart/related; boundary={boundary}"},
+            )
+            d = r.json()
+            return {"id": d.get("id", file_id), "name": d.get("name", ""), "updated": True}
+    
     @staticmethod
     def _fmt_size(b):
         if b > 1e9: return f"{b/1e9:.1f} GB"

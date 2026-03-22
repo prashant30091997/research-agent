@@ -20,7 +20,10 @@ Sources ({len(sources)} total):
 {f'Additional instructions: {instructions}' if instructions else ''}
 
 Include: thematic synthesis, methodology overview, key findings, research gaps, future directions.
-Use [Author et al., Year] citations. Only cite papers listed above."""
+Use [Author et al., Year] citations. Only cite papers listed above.
+
+IMPORTANT: At the END of the review, include a complete "References" section listing all cited papers in proper academic format:
+Author(s). Title. Journal. Year;Volume(Issue):Pages. DOI: xxx. PMID: xxx."""
     
     result = await ai._call_ai(
         "You are an expert academic researcher writing a publication-ready literature review.",

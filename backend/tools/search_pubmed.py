@@ -35,7 +35,27 @@ async def search_pubmed(query: str, max_results: int = 15) -> list:
                 "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
                 "db": "PubMed",
                 "relevance": max(50, 99 - i * 3),
+                "abstract": "",  # filled below
             })
+        
+        # Step 3: Fetch abstracts via efetch (XML)
+        if papers:
+            try:
+                import re
+                r3 = await client.get("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi", params={
+                    "db": "pubmed", "id": ",".join(ids[:15]), "retmode": "xml"
+                })
+                xml = r3.text
+                # Extract abstracts per PMID
+                for p in papers:
+                    pattern = f'<PMID[^>]*>{p["pmid"]}</PMID>.*?<AbstractText[^>]*>(.*?)</AbstractText>'
+                    match = re.search(pattern, xml, re.DOTALL)
+                    if match:
+                        abstract = re.sub(r'<[^>]+>', ' ', match.group(1)).strip()
+                        p["abstract"] = abstract[:2000]
+            except:
+                pass  # Abstracts are optional — don't fail the search
+        
         return papers
 
 async def search_pubmed_mesh(topic: str, ai_router, max_results: int = 15) -> dict:
