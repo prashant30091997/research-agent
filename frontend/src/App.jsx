@@ -82,6 +82,13 @@ export default function App() {
   const [toolActivity, setToolActivity] = useState([]); // [{tool, status, model, message, time, result_summary}]
   const [showActivity, setShowActivity] = useState(true); // visible by default during execution // index in messages array
 
+  // ── FILE PICKER (choose files from working folder) ──
+  const [showFilePicker, setShowFilePicker] = useState(false);
+  const [pickerFiles, setPickerFiles] = useState([]); // all files in working folder
+  const [selectedFiles, setSelectedFiles] = useState([]); // chosen files [{id, name, ext, cat, size_str}]
+  const [fileSearch, setFileSearch] = useState("");
+  const [pickerLoading, setPickerLoading] = useState(false);
+
   const assistantMessages = messages.filter(m => m.role === "assistant");
   const readerMsg = readerIndex >= 0 && readerIndex < assistantMessages.length ? assistantMessages[readerIndex] : null;
 
@@ -122,6 +129,8 @@ export default function App() {
     document.head.appendChild(s);
     // Create initial session
     createSession();
+    // Load session history from backend
+    fetch(`${backendUrl}/api/session/list`).then(r => r.json()).then(d => setSessions(d.sessions || [])).catch(() => {});
   }, []);
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
@@ -165,6 +174,7 @@ export default function App() {
           tool_models: toolModels,
           drive_token: driveToken,
           working_folder_id: workingFolder?.id,
+          selected_files: selectedFiles.map(f => ({ id: f.id, name: f.name, ext: f.ext, cat: f.cat })),
         }),
       });
 
@@ -230,6 +240,7 @@ export default function App() {
           messages: newMessages.map(m => ({ role: m.role, content: m.content })),
           model: toolModels.chat, tool_models: toolModels,
           drive_token: driveToken, working_folder_id: workingFolder?.id,
+          selected_files: selectedFiles.map(f => ({ id: f.id, name: f.name, ext: f.ext, cat: f.cat })),
         });
         setMessages(prev => [...prev, { role: "assistant", content: result.message || "No response", tool_results: result.tool_results || [] }]);
       }
@@ -241,6 +252,7 @@ export default function App() {
           messages: newMessages.map(m => ({ role: m.role, content: m.content })),
           model: toolModels.chat, tool_models: toolModels,
           drive_token: driveToken, working_folder_id: workingFolder?.id,
+          selected_files: selectedFiles.map(f => ({ id: f.id, name: f.name, ext: f.ext, cat: f.cat })),
         });
         setMessages(prev => [...prev, { role: "assistant", content: result.message || "No response", tool_results: result.tool_results || [] }]);
       } catch (e2) {
@@ -250,6 +262,8 @@ export default function App() {
     setIsLoading(false);
     // Mark all activities as done
     setToolActivity(prev => prev.map(a => ({ ...a, status: "done" })));
+    // Refresh session list so new session appears in history
+    fetch(`${backendUrl}/api/session/list`).then(r => r.json()).then(d => setSessions(d.sessions || [])).catch(() => {});
   };
 
   const TOOL_ICONS = {
@@ -344,6 +358,61 @@ export default function App() {
     setNewFolderName("");
     browseDrive(parentId);
   };
+
+  // ── FILE PICKER FUNCTIONS ──
+  const openFilePicker = async () => {
+    if (!driveToken || !workingFolder?.id) { alert("Select a working folder first"); return; }
+    setShowFilePicker(true);
+    setPickerLoading(true);
+    setFileSearch("");
+    try {
+      const q = `'${workingFolder.id}' in parents and trashed=false`;
+      const r = await fetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType,size)&pageSize=100&orderBy=name&supportsAllDrives=true&includeItemsFromAllDrives=true`, {
+        headers: { "Authorization": `Bearer ${driveToken}` },
+      });
+      const d = await r.json();
+      const files = (d.files || []).map(f => {
+        const ext = f.name.includes(".") ? "." + f.name.rsplit ? f.name.split(".").pop().toLowerCase() : "" : "";
+        const cat = [".py",".ipynb",".m",".r",".js",".sh",".sql"].includes("." + ext) ? "code" :
+                    [".mat",".csv",".xlsx",".json",".hdf5",".npy",".edf",".parquet",".tsv",".pkl"].includes("." + ext) ? "data" :
+                    [".pdf",".docx",".txt",".md",".pptx"].includes("." + ext) ? "doc" : "other";
+        return { id: f.id, name: f.name, ext: "." + ext, cat, size: parseInt(f.size || 0), size_str: f.size ? `${(parseInt(f.size)/1024).toFixed(0)} KB` : "", mime: f.mimeType || "" };
+      });
+      setPickerFiles(files);
+    } catch (e) { console.error(e); }
+    setPickerLoading(false);
+  };
+
+  const searchFilesInDrive = async () => {
+    if (!driveToken || !fileSearch.trim()) return;
+    setPickerLoading(true);
+    try {
+      const q = `name contains '${fileSearch}' and '${workingFolder?.id || "root"}' in parents and trashed=false`;
+      const r = await fetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType,size)&pageSize=50&supportsAllDrives=true&includeItemsFromAllDrives=true`, {
+        headers: { "Authorization": `Bearer ${driveToken}` },
+      });
+      const d = await r.json();
+      setPickerFiles((d.files || []).map(f => {
+        const ext = f.name.includes(".") ? f.name.split(".").pop().toLowerCase() : "";
+        const cat = [".py",".ipynb",".m",".r"].includes("." + ext) ? "code" : [".mat",".csv",".xlsx",".json",".hdf5",".npy",".edf"].includes("." + ext) ? "data" : [".pdf",".docx",".txt",".md"].includes("." + ext) ? "doc" : "other";
+        return { id: f.id, name: f.name, ext: "." + ext, cat, size: parseInt(f.size || 0), size_str: f.size ? `${(parseInt(f.size)/1024).toFixed(0)} KB` : "", mime: f.mimeType || "" };
+      }));
+    } catch (e) { console.error(e); }
+    setPickerLoading(false);
+  };
+
+  const toggleFileSelect = (file) => {
+    setSelectedFiles(prev => {
+      const exists = prev.find(f => f.id === file.id);
+      if (exists) return prev.filter(f => f.id !== file.id);
+      return [...prev, file];
+    });
+  };
+
+  const isFileSelected = (fileId) => selectedFiles.some(f => f.id === fileId);
+
+  const FILE_CAT_ICONS = { code: "🐍", data: "📊", doc: "📄", other: "📎" };
+  const FILE_CAT_COLORS = { code: "#34d399", data: "#60a5fa", doc: "#fbbf24", other: "#8899b0" };
 
   // ── Load Sessions ──
   const loadSessions = async () => {
@@ -512,7 +581,7 @@ export default function App() {
       </div>
 
       {/* ── TOOL ACTIVITY PANEL ── */}
-      {(showActivity && (isLoading || toolActivity.length > 0)) && <div style={{ width: "240px", borderRight: "1px solid #1a2540", background: "#080c14", display: "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden" }}>
+      {showActivity && <div style={{ width: "240px", borderRight: "1px solid #1a2540", background: "#080c14", display: "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden" }}>
         {/* Header */}
         <div style={{ padding: "10px 12px", borderBottom: "1px solid #1a2540", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontSize: "11px", fontWeight: 700, color: "#00e5a0" }}>⚡ Tool Activity</div>
@@ -528,6 +597,14 @@ export default function App() {
             <div style={{ padding: "16px 8px", textAlign: "center", color: "#4e6380", fontSize: "10px" }}>
               <div style={{ fontSize: "16px", marginBottom: "6px", animation: "pulse 1s infinite" }}>🧠</div>
               Waiting for AI to decide which tools to use...
+            </div>
+          )}
+
+          {toolActivity.length === 0 && !isLoading && (
+            <div style={{ padding: "16px 8px", textAlign: "center", color: "#4e6380", fontSize: "10px" }}>
+              <div style={{ fontSize: "16px", marginBottom: "6px", opacity: 0.4 }}>⚡</div>
+              Tool activity will appear here<br />when the AI processes your request.
+              <div style={{ marginTop: "8px", fontSize: "9px", color: "#2a3550" }}>Each tool shows: what it's doing, which model, and time taken</div>
             </div>
           )}
 
@@ -591,6 +668,9 @@ export default function App() {
               const m = MODELS.find(x => x.id === mid);
               return m ? <span key={mid} style={{ fontSize: "9px", display: "flex", alignItems: "center", gap: "2px", color: m.color }}>{m.icon} {m.name}</span> : null;
             })}
+            <button onClick={openFilePicker} style={{ padding: "3px 8px", borderRadius: "4px", border: `1px solid ${selectedFiles.length > 0 ? "#fbbf2440" : "#1a2540"}`, background: selectedFiles.length > 0 ? "#fbbf2410" : "transparent", color: selectedFiles.length > 0 ? "#fbbf24" : "#4e6380", fontSize: "10px", cursor: "pointer", fontWeight: 600, display: "flex", alignItems: "center", gap: "4px" }}>
+              📎 Files {selectedFiles.length > 0 && <span style={{ background: "#fbbf24", color: "#000", borderRadius: "8px", padding: "0 5px", fontSize: "9px", fontWeight: 800 }}>{selectedFiles.length}</span>}
+            </button>
             <button onClick={() => setShowActivity(!showActivity)} style={{ padding: "3px 8px", borderRadius: "4px", border: `1px solid ${showActivity ? "#00e5a040" : "#1a2540"}`, background: showActivity ? "#00e5a010" : "transparent", color: showActivity ? "#00e5a0" : "#4e6380", fontSize: "10px", cursor: "pointer", fontWeight: 600 }}>
               ⚡ {toolActivity.filter(a => a.status === "running").length > 0 ? `${toolActivity.filter(a => a.status === "running").length} running` : "Tools"}
             </button>
@@ -672,47 +752,62 @@ export default function App() {
           </div>
         </div>
 
-        {/* Input */}
+        {/* Input — expandable textarea */}
         <div style={{ padding: "12px 20px", borderTop: "1px solid #1a2540", background: "#0a0f18" }}>
-          <div style={{ maxWidth: "800px", margin: "0 auto", display: "flex", gap: "8px" }}>
-            <input value={input} onChange={e => setInput(e.target.value)}
+          <div style={{ maxWidth: "800px", margin: "0 auto" }}>
+            {/* Selected files tags */}
+            {selectedFiles.length > 0 && <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", marginBottom: "8px" }}>
+              {selectedFiles.map(f => (
+                <span key={f.id} onClick={() => toggleFileSelect(f)} style={{
+                  display: "inline-flex", alignItems: "center", gap: "3px", padding: "2px 8px", borderRadius: "4px", fontSize: "10px", cursor: "pointer",
+                  background: FILE_CAT_COLORS[f.cat] + "15", border: `1px solid ${FILE_CAT_COLORS[f.cat]}25`, color: FILE_CAT_COLORS[f.cat],
+                }}>
+                  {FILE_CAT_ICONS[f.cat]} {f.name.length > 20 ? f.name.slice(0, 17) + "..." : f.name} <span style={{ opacity: 0.5, marginLeft: "2px" }}>×</span>
+                </span>
+              ))}
+              <span style={{ fontSize: "9px", color: "#4e6380", alignSelf: "center" }}>Working with {selectedFiles.length} file{selectedFiles.length > 1 ? "s" : ""} — click to remove</span>
+            </div>}
+            <div style={{ display: "flex", gap: "8px", alignItems: "flex-end" }}>
+            <textarea value={input} onChange={e => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 200) + "px"; }}
               onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
               placeholder={workingFolder ? `Ask about "${workingFolder.name}" or anything else...` : "Describe your research task..."}
-              style={{ flex: 1, padding: "12px 16px", borderRadius: "8px", border: "1px solid #1a2540", background: "#0f1520", color: "#e0e8f4", fontSize: "13px", outline: "none", fontFamily: "inherit" }}
+              rows={1}
+              style={{ flex: 1, padding: "12px 16px", borderRadius: "8px", border: "1px solid #1a2540", background: "#0f1520", color: "#e0e8f4", fontSize: "13px", outline: "none", fontFamily: "inherit", resize: "none", minHeight: "44px", maxHeight: "200px", overflowY: "auto", lineHeight: "1.5" }}
             />
             {isLoading ? (
-              <button onClick={() => { /* TODO: abort */ }} style={{ padding: "12px 20px", borderRadius: "8px", border: "none", background: "#f87171", color: "#fff", fontWeight: 700, cursor: "pointer" }}>■ Stop</button>
+              <button onClick={() => { /* TODO: abort */ }} style={{ padding: "12px 20px", borderRadius: "8px", border: "none", background: "#f87171", color: "#fff", fontWeight: 700, cursor: "pointer", flexShrink: 0, height: "44px" }}>■ Stop</button>
             ) : (
-              <button onClick={sendMessage} disabled={!input.trim()} style={{ padding: "12px 20px", borderRadius: "8px", border: "none", background: input.trim() ? "#00e5a0" : "#1a2540", color: input.trim() ? "#000" : "#4e6380", fontWeight: 700, cursor: input.trim() ? "pointer" : "default" }}>Send</button>
+              <button onClick={sendMessage} disabled={!input.trim()} style={{ padding: "12px 20px", borderRadius: "8px", border: "none", background: input.trim() ? "#00e5a0" : "#1a2540", color: input.trim() ? "#000" : "#4e6380", fontWeight: 700, cursor: input.trim() ? "pointer" : "default", flexShrink: 0, height: "44px" }}>Send</button>
             )}
+          </div>
           </div>
         </div>
       </div>
 
-      {/* ═══ READER PANEL (right side) ═══ */}
-      {readerOpen && <div style={{ width: "380px", borderLeft: "1px solid #1a2540", background: "#0a0f18", display: "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden" }}>
+      {/* ═══ READER PANEL (overlay on right half of chat) ═══ */}
+      {readerOpen && <div style={{ position: "fixed", top: 0, right: 0, width: "50vw", height: "100vh", background: "#0a0f18", borderLeft: "2px solid #00e5a040", zIndex: 90, display: "flex", flexDirection: "column", boxShadow: "-4px 0 30px rgba(0,0,0,0.5)" }}>
         {/* Reader Header with arrows */}
-        <div style={{ padding: "10px 14px", borderBottom: "1px solid #1a2540", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <button onClick={readerPrev} disabled={readerIndex <= 0} style={{ width: 28, height: 28, borderRadius: "6px", border: "1px solid #1a2540", background: readerIndex > 0 ? "#0f1520" : "transparent", color: readerIndex > 0 ? "#e0e8f4" : "#2a3550", fontSize: "14px", cursor: readerIndex > 0 ? "pointer" : "default", display: "flex", alignItems: "center", justifyContent: "center" }}>←</button>
-            <span style={{ fontSize: "11px", color: "#8899b0", fontFamily: "monospace" }}>{assistantMessages.length > 0 ? `${readerIndex + 1} / ${assistantMessages.length}` : "0 / 0"}</span>
-            <button onClick={readerNext} disabled={readerIndex >= assistantMessages.length - 1} style={{ width: 28, height: 28, borderRadius: "6px", border: "1px solid #1a2540", background: readerIndex < assistantMessages.length - 1 ? "#0f1520" : "transparent", color: readerIndex < assistantMessages.length - 1 ? "#e0e8f4" : "#2a3550", fontSize: "14px", cursor: readerIndex < assistantMessages.length - 1 ? "pointer" : "default", display: "flex", alignItems: "center", justifyContent: "center" }}>→</button>
+        <div style={{ padding: "12px 16px", borderBottom: "1px solid #1a2540", display: "flex", justifyContent: "space-between", alignItems: "center", background: "#080c14" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <button onClick={readerPrev} disabled={readerIndex <= 0} style={{ width: 32, height: 32, borderRadius: "6px", border: "1px solid #1a2540", background: readerIndex > 0 ? "#0f1520" : "transparent", color: readerIndex > 0 ? "#e0e8f4" : "#2a3550", fontSize: "16px", cursor: readerIndex > 0 ? "pointer" : "default", display: "flex", alignItems: "center", justifyContent: "center" }}>←</button>
+            <span style={{ fontSize: "13px", color: "#8899b0", fontFamily: "monospace", fontWeight: 600 }}>{assistantMessages.length > 0 ? `${readerIndex + 1} / ${assistantMessages.length}` : "0 / 0"}</span>
+            <button onClick={readerNext} disabled={readerIndex >= assistantMessages.length - 1} style={{ width: 32, height: 32, borderRadius: "6px", border: "1px solid #1a2540", background: readerIndex < assistantMessages.length - 1 ? "#0f1520" : "transparent", color: readerIndex < assistantMessages.length - 1 ? "#e0e8f4" : "#2a3550", fontSize: "16px", cursor: readerIndex < assistantMessages.length - 1 ? "pointer" : "default", display: "flex", alignItems: "center", justifyContent: "center" }}>→</button>
           </div>
-          <div style={{ fontSize: "12px", fontWeight: 700, color: "#00e5a0" }}>📖 Reader</div>
-          <button onClick={() => setReaderOpen(false)} style={{ background: "none", border: "none", color: "#8899b0", cursor: "pointer", fontSize: "16px" }}>×</button>
+          <div style={{ fontSize: "14px", fontWeight: 700, color: "#00e5a0" }}>📖 Full Response Reader</div>
+          <button onClick={() => setReaderOpen(false)} style={{ width: 32, height: 32, borderRadius: "6px", background: "#f8717120", border: "none", color: "#f87171", cursor: "pointer", fontSize: "18px", display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>
         </div>
 
         {/* Reader Content */}
-        <div style={{ flex: 1, overflow: "auto", padding: "16px" }}>
+        <div style={{ flex: 1, overflow: "auto", padding: "24px 28px" }}>
           {readerMsg ? (
-            <div>
-              <div style={{ fontSize: "10px", color: "#00e5a0", fontWeight: 600, marginBottom: "8px", display: "flex", alignItems: "center", gap: "6px" }}>
+            <div style={{ maxWidth: "700px" }}>
+              <div style={{ fontSize: "12px", color: "#00e5a0", fontWeight: 600, marginBottom: "12px", display: "flex", alignItems: "center", gap: "8px" }}>
                 🧬 Response {readerIndex + 1}
-                {readerMsg.tool_results?.length > 0 && <span style={{ fontSize: "9px", color: "#60a5fa", background: "#60a5fa15", padding: "1px 6px", borderRadius: "3px" }}>🔧 {readerMsg.tool_results.length} tools</span>}
+                {readerMsg.tool_results?.length > 0 && <span style={{ fontSize: "10px", color: "#60a5fa", background: "#60a5fa15", padding: "2px 8px", borderRadius: "4px" }}>🔧 {readerMsg.tool_results.length} tools used</span>}
               </div>
               
               {/* Full content */}
-              <div style={{ fontSize: "13px", lineHeight: "1.7", color: "#c8d4e0" }}>
+              <div style={{ fontSize: "14px", lineHeight: "1.8", color: "#c8d4e0" }}>
                 <MessageContent content={readerMsg.content} />
               </div>
 
@@ -720,17 +815,17 @@ export default function App() {
               {readerMsg.tool_results?.map((tr, j) => <ToolResult key={j} result={tr} />)}
             </div>
           ) : (
-            <div style={{ textAlign: "center", padding: "40px 20px", color: "#4e6380" }}>
-              <div style={{ fontSize: "24px", marginBottom: "8px", opacity: 0.3 }}>📖</div>
-              <div style={{ fontSize: "12px" }}>Click "Read Full" on any response<br />or use ← → arrows to navigate</div>
+            <div style={{ textAlign: "center", padding: "60px 20px", color: "#4e6380" }}>
+              <div style={{ fontSize: "32px", marginBottom: "12px", opacity: 0.3 }}>📖</div>
+              <div style={{ fontSize: "14px" }}>Click "Read Full" on any response<br />or use ← → arrows to navigate</div>
             </div>
           )}
         </div>
 
         {/* Reader footer with quick actions */}
-        {readerMsg && <div style={{ padding: "8px 14px", borderTop: "1px solid #1a2540", display: "flex", gap: "6px" }}>
-          <button onClick={() => navigator.clipboard?.writeText(readerMsg.content)} style={{ flex: 1, padding: "6px", borderRadius: "4px", border: "1px solid #1a2540", background: "transparent", color: "#8899b0", fontSize: "10px", cursor: "pointer" }}>📋 Copy Text</button>
-          <button onClick={() => { setInput(`Modify the above response: `); setReaderOpen(false); }} style={{ flex: 1, padding: "6px", borderRadius: "4px", border: "1px solid #00e5a030", background: "#00e5a010", color: "#00e5a0", fontSize: "10px", cursor: "pointer" }}>✏️ Modify</button>
+        {readerMsg && <div style={{ padding: "10px 16px", borderTop: "1px solid #1a2540", display: "flex", gap: "8px", background: "#080c14" }}>
+          <button onClick={() => navigator.clipboard?.writeText(readerMsg.content)} style={{ flex: 1, padding: "8px", borderRadius: "6px", border: "1px solid #1a2540", background: "transparent", color: "#8899b0", fontSize: "11px", cursor: "pointer" }}>📋 Copy Text</button>
+          <button onClick={() => { setInput(`Modify the above response: `); setReaderOpen(false); }} style={{ flex: 1, padding: "8px", borderRadius: "6px", border: "1px solid #00e5a030", background: "#00e5a010", color: "#00e5a0", fontSize: "11px", cursor: "pointer" }}>✏️ Modify</button>
         </div>}
       </div>}
 
@@ -853,6 +948,90 @@ export default function App() {
 
           <div style={{ padding: "10px 16px", borderTop: "1px solid #1a2540", fontSize: "10px", color: "#4e6380" }}>
             Click folder to select as working directory • Double-click to open
+          </div>
+        </div>
+      </>}
+
+      {/* ═══ FILE PICKER MODAL ═══ */}
+      {showFilePicker && <>
+        <div onClick={() => setShowFilePicker(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 200 }} />
+        <div style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", width: "560px", maxHeight: "80vh", background: "#0a0f18", border: "1px solid #1a2540", borderRadius: "12px", zIndex: 201, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          {/* Header */}
+          <div style={{ padding: "14px 16px", borderBottom: "1px solid #1a2540", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: "14px" }}>📎 Choose Files</div>
+              <div style={{ fontSize: "10px", color: "#4e6380", marginTop: "2px" }}>
+                {workingFolder?.name || "Working folder"} • {selectedFiles.length} selected
+              </div>
+            </div>
+            <button onClick={() => setShowFilePicker(false)} style={{ background: "none", border: "none", color: "#8899b0", cursor: "pointer", fontSize: "18px" }}>×</button>
+          </div>
+
+          {/* Search */}
+          <div style={{ padding: "8px 16px", borderBottom: "1px solid #1a2540", display: "flex", gap: "6px" }}>
+            <input value={fileSearch} onChange={e => setFileSearch(e.target.value)} onKeyDown={e => e.key === "Enter" && searchFilesInDrive()}
+              placeholder="Search files in folder..."
+              style={{ flex: 1, padding: "6px 10px", borderRadius: "4px", border: "1px solid #1a2540", background: "#0f1520", color: "#e0e8f4", fontSize: "11px", outline: "none" }} />
+            <button onClick={searchFilesInDrive} style={{ padding: "6px 10px", borderRadius: "4px", border: "none", background: "#4285f4", color: "#fff", fontSize: "10px", fontWeight: 600, cursor: "pointer" }}>🔍</button>
+            <button onClick={openFilePicker} style={{ padding: "6px 10px", borderRadius: "4px", border: "1px solid #1a2540", background: "transparent", color: "#8899b0", fontSize: "10px", cursor: "pointer" }}>↻ All</button>
+          </div>
+
+          {/* Selected files bar */}
+          {selectedFiles.length > 0 && <div style={{ padding: "6px 16px", borderBottom: "1px solid #1a2540", display: "flex", gap: "4px", flexWrap: "wrap" }}>
+            {selectedFiles.map(f => (
+              <span key={f.id} onClick={() => toggleFileSelect(f)} style={{
+                display: "inline-flex", alignItems: "center", gap: "4px", padding: "2px 8px", borderRadius: "4px", fontSize: "10px", cursor: "pointer",
+                background: FILE_CAT_COLORS[f.cat] + "15", border: `1px solid ${FILE_CAT_COLORS[f.cat]}30`, color: FILE_CAT_COLORS[f.cat],
+              }}>
+                {FILE_CAT_ICONS[f.cat]} {f.name.length > 25 ? f.name.slice(0, 22) + "..." : f.name} ×
+              </span>
+            ))}
+            <button onClick={() => setSelectedFiles([])} style={{ padding: "2px 8px", borderRadius: "4px", border: "1px solid #f8717130", background: "transparent", color: "#f87171", fontSize: "9px", cursor: "pointer" }}>Clear all</button>
+          </div>}
+
+          {/* File list */}
+          <div style={{ flex: 1, overflow: "auto", padding: "6px 12px" }}>
+            {pickerLoading && <div style={{ textAlign: "center", padding: "20px", color: "#4e6380" }}>Loading files...</div>}
+
+            {/* Group by category */}
+            {["code", "data", "doc", "other"].map(cat => {
+              const catFiles = (fileSearch.trim() ? pickerFiles : pickerFiles).filter(f => f.cat === cat);
+              if (catFiles.length === 0) return null;
+              return (
+                <div key={cat} style={{ marginBottom: "8px" }}>
+                  <div style={{ fontSize: "10px", fontWeight: 700, color: FILE_CAT_COLORS[cat], padding: "4px 8px", textTransform: "uppercase" }}>
+                    {FILE_CAT_ICONS[cat]} {cat} ({catFiles.length})
+                  </div>
+                  {catFiles.map(f => (
+                    <div key={f.id} onClick={() => toggleFileSelect(f)} style={{
+                      display: "flex", alignItems: "center", gap: "8px", padding: "6px 10px", borderRadius: "6px", marginBottom: "2px", cursor: "pointer",
+                      background: isFileSelected(f.id) ? FILE_CAT_COLORS[f.cat] + "10" : "#0f1520",
+                      border: `1px solid ${isFileSelected(f.id) ? FILE_CAT_COLORS[f.cat] + "40" : "#1a254020"}`,
+                    }}>
+                      <div style={{ width: 16, height: 16, borderRadius: "3px", border: `2px solid ${isFileSelected(f.id) ? FILE_CAT_COLORS[f.cat] : "#2a3550"}`, background: isFileSelected(f.id) ? FILE_CAT_COLORS[f.cat] : "transparent", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "10px", color: "#fff", flexShrink: 0 }}>
+                        {isFileSelected(f.id) && "✓"}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: "11px", fontWeight: 600, color: "#e0e8f4", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</div>
+                      </div>
+                      <div style={{ fontSize: "9px", color: "#4e6380", flexShrink: 0 }}>{f.size_str}</div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+
+            {!pickerLoading && pickerFiles.length === 0 && (
+              <div style={{ textAlign: "center", padding: "20px", color: "#4e6380", fontSize: "11px" }}>No files found in this folder</div>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div style={{ padding: "10px 16px", borderTop: "1px solid #1a2540", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ fontSize: "10px", color: "#8899b0" }}>{selectedFiles.length} files selected</div>
+            <button onClick={() => setShowFilePicker(false)} style={{ padding: "8px 20px", borderRadius: "6px", border: "none", background: "#00e5a0", color: "#000", fontWeight: 700, fontSize: "11px", cursor: "pointer" }}>
+              ✓ Done
+            </button>
           </div>
         </div>
       </>}
