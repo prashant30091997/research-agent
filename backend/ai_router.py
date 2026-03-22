@@ -224,7 +224,7 @@ TOOLS = [
     },
     {
         "name": "download_papers",
-        "description": "Download full-text PDFs of papers to the user's Google Drive folder. Uses PubMed Central, Unpaywall, and Europe PMC to find open-access versions. Has 4-second delay between downloads to avoid rate limiting. Papers that are NOT open-access are automatically saved to a separate Google Doc 'Papers_Without_Open_Access' with their titles, abstracts, and citations.",
+        "description": "Download PDFs of papers that were found by search_pubmed. Each paper already has a pdf_url attached (found during search). This tool just downloads from those URLs — it does NOT search again. Papers without pdf_url are compiled into a Compiled_Abstracts Google Doc with titles, abstracts, and references. Use 4-sec delays. Exponential backoff for Drive uploads. IMPORTANT: Pass the EXACT paper objects returned by search_pubmed — they contain pdf_url.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -253,7 +253,7 @@ You have access to these tools:
 - search_pubmed: Search PubMed for papers (free, no key needed)
 - search_scopus: Search Scopus for papers (needs API key)
 - generate_mesh_terms: Generate optimized MeSH search terms from a topic
-- download_papers: DOWNLOAD full-text PDFs using Europe PMC. For each paper found by search_pubmed, it checks Europe PMC for open-access PDF via fullTextUrlList, downloads with retry, saves to Drive. Creates Compiled_Abstracts doc for non-downloadable papers. 4-sec delay between downloads.
+- download_papers: Download PDFs of papers found by search_pubmed. Each paper ALREADY has pdf_url from search. This tool just downloads — it does NOT search again. Pass the EXACT paper objects from search_pubmed. Creates Compiled_Abstracts doc for non-downloadable papers.
 - get_paper_full_text: READ the actual full text of papers from Europe PMC and PubMed. Use this BEFORE writing a review so you have real paper content.
 - drive_list_folders / drive_list_files / drive_read_file / drive_create_folder: Browse and manage Google Drive
 - write_literature_review: Write comprehensive lit review from papers (use AFTER get_paper_full_text)
@@ -269,12 +269,14 @@ You have access to these tools:
 
 CRITICAL WORKFLOW — When user asks to search AND download papers:
 1. generate_mesh_terms → get MeSH terms for the topic
-2. search_pubmed (and search_scopus if key available) → find papers
-3. PRESENT papers to user → let them select which ones
-4. download_papers → for each selected paper, searches Europe PMC for open-access PDF, downloads to Drive folder. Non-downloadable papers get compiled into a Compiled_Abstracts Google Doc.
-5. get_paper_full_text → read actual content of downloaded/available papers
-6. write_literature_review → write review using REAL paper content
+2. search_pubmed (and search_scopus if key available) → find papers. IMPORTANT: search_pubmed already checks Europe PMC for each paper and attaches pdf_url if open-access.
+3. PRESENT papers to user with their pdf availability → let them select which ones
+4. download_papers → pass the EXACT selected paper objects (they already contain pdf_url). This tool ONLY downloads from the attached URLs. It does NOT search again.
+5. get_paper_full_text → read actual content of papers
+6. write_literature_review → write review using REAL paper content. ONLY cite papers from the user's selected list. NEVER cite papers not in the list.
 7. create_google_doc → save the review to Drive
+
+CRITICAL: When writing a literature review, ONLY use and cite papers that were in the user's selected list. Do NOT hallucinate or add papers that were not found by search_pubmed. Every reference must correspond to a paper the user selected.
 
 CRITICAL RULES:
 - You CAN download papers. Use the download_papers tool. NEVER say "I cannot download papers".
