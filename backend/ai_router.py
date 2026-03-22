@@ -98,7 +98,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "topic": {"type": "string", "description": "Research topic"},
-                "papers": {"type": "array", "description": "List of paper objects with title, authors, journal, year, content"},
+                "papers": {"type": "array", "items": {"type": "object"}, "description": "List of paper objects with title, authors, journal, year, content"},
                 "instructions": {"type": "string", "description": "Additional instructions from user (e.g., 'focus on methodology', 'make introduction longer')"}
             },
             "required": ["topic"]
@@ -164,8 +164,8 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "What analysis to perform"},
-                "data_files": {"type": "array", "description": "List of data file info"},
-                "code_files": {"type": "array", "description": "Existing code files to reuse"},
+                "data_files": {"type": "array", "items": {"type": "object"}, "description": "List of data file info"},
+                "code_files": {"type": "array", "items": {"type": "object"}, "description": "Existing code files to reuse"},
                 "drive_path": {"type": "string", "description": "Drive path for data"}
             },
             "required": ["query"]
@@ -200,8 +200,8 @@ TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "code_files": {"type": "array", "description": "List of code file objects with id, name, content fields"},
-                "data_files": {"type": "array", "description": "Data files in the same folder (for context)"},
+                "code_files": {"type": "array", "items": {"type": "object"}, "description": "List of code file objects with id, name, content fields"},
+                "data_files": {"type": "array", "items": {"type": "object"}, "description": "Data files in the same folder (for context)"},
                 "query": {"type": "string", "description": "Research context"}
             },
             "required": ["code_files"]
@@ -216,7 +216,7 @@ TOOLS = [
                 "query": {"type": "string", "description": "What analysis to design"},
                 "signal_types": {"type": "array", "items": {"type": "string"}, "description": "Signal types: eeg, ecg, emg, fnirs, auto"},
                 "custom_signal": {"type": "string", "description": "Description of custom/unconventional signal type"},
-                "data_files": {"type": "array", "description": "Available data files"},
+                "data_files": {"type": "array", "items": {"type": "object"}, "description": "Available data files"},
                 "code_analysis": {"type": "string", "description": "Output from understand_code (if available)"}
             },
             "required": ["query"]
@@ -228,7 +228,7 @@ TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "papers": {"type": "array", "description": "List of paper objects with pmid, doi, title fields"},
+                "papers": {"type": "array", "items": {"type": "object"}, "description": "List of paper objects with pmid, doi, title fields"},
                 "folder_id": {"type": "string", "description": "Drive folder ID to save papers in"}
             },
             "required": ["papers"]
@@ -240,7 +240,7 @@ TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "papers": {"type": "array", "description": "List of paper objects with pmid, doi, title"},
+                "papers": {"type": "array", "items": {"type": "object"}, "description": "List of paper objects with pmid, doi, title"},
             },
             "required": ["papers"]
         }
