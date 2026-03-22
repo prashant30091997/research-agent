@@ -64,8 +64,10 @@ class ToolRequest(BaseModel):
     drive_token: Optional[str] = None
 
 class SessionRequest(BaseModel):
-    session_id: str
+    session_id: str = ""
     drive_token: Optional[str] = None
+    history_folder_id: Optional[str] = None
+    drive_file_id: Optional[str] = None
 
 # ══════════════════════════════════════════════════════════
 # CHAT ENDPOINT — The Brain
@@ -259,25 +261,27 @@ async def api_generate_notebook(req: ToolRequest):
 
 @app.post("/api/session/save")
 async def api_session_save(req: SessionRequest):
-    """Save session to Drive"""
+    """Save session to Drive history folder"""
     session = sessions.get(req.session_id)
     if not session:
         return {"error": "Session not found"}
-    if req.drive_token:
+    if req.drive_token and req.history_folder_id:
         drive = DriveOps(req.drive_token)
-        result = await sessions.save_to_drive(req.session_id, drive)
+        result = await sessions.save_to_drive(req.session_id, drive, req.history_folder_id)
         return result
     return {"status": "saved_locally"}
 
 @app.post("/api/session/load")
 async def api_session_load(req: SessionRequest):
     """Load session from local or Drive"""
+    # Try local first
     session = sessions.get(req.session_id)
     if session:
         return session
-    if req.drive_token:
+    # Try Drive
+    if req.drive_token and req.drive_file_id:
         drive = DriveOps(req.drive_token)
-        session = await sessions.load_from_drive(req.session_id, drive)
+        session = await sessions.load_from_drive(drive, req.drive_file_id)
         return session or {"error": "Session not found"}
     return {"error": "Session not found"}
 
@@ -285,6 +289,15 @@ async def api_session_load(req: SessionRequest):
 async def api_session_list():
     """List all local sessions"""
     return {"sessions": sessions.list_all()}
+
+@app.post("/api/session/list_drive")
+async def api_session_list_drive(req: SessionRequest):
+    """List all sessions in Drive history folder"""
+    if not req.drive_token or not req.history_folder_id:
+        return {"sessions": [], "error": "Drive not connected or no history folder set"}
+    drive = DriveOps(req.drive_token)
+    drive_sessions = await sessions.list_drive_sessions(drive, req.history_folder_id)
+    return {"sessions": drive_sessions}
 
 @app.post("/api/session/new")
 async def api_session_new():
