@@ -101,3 +101,32 @@ class DriveOps:
         if b > 1e9: return f"{b/1e9:.1f} GB"
         if b > 1e6: return f"{b/1e6:.1f} MB"
         return f"{b/1e3:.1f} KB"
+    
+    async def upload_binary(self, name: str, content: bytes, mime_type: str = "application/pdf",
+                            parent_id: str = None) -> str:
+        """Upload binary content (PDFs, images) to Drive. Returns file ID."""
+        import base64
+        metadata = {"name": name}
+        if parent_id: metadata["parents"] = [parent_id]
+        
+        boundary = f"----RAbin{id(content)}"
+        meta_json = json.dumps(metadata)
+        
+        # Build multipart body with binary content
+        body = (
+            f"--{boundary}\r\n"
+            f"Content-Type: application/json; charset=UTF-8\r\n\r\n"
+            f"{meta_json}\r\n"
+            f"--{boundary}\r\n"
+            f"Content-Type: {mime_type}\r\n"
+            f"Content-Transfer-Encoding: binary\r\n\r\n"
+        ).encode() + content + f"\r\n--{boundary}--".encode()
+        
+        async with httpx.AsyncClient(timeout=120) as c:
+            r = await c.post(
+                f"{UPLOAD_API}?uploadType=multipart",
+                content=body,
+                headers={**self.headers, "Content-Type": f"multipart/related; boundary={boundary}"},
+            )
+            d = r.json()
+            return d.get("id")

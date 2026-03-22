@@ -222,6 +222,29 @@ TOOLS = [
             "required": ["query"]
         }
     },
+    {
+        "name": "download_papers",
+        "description": "Download full-text PDFs of papers to the user's Google Drive folder. Uses PubMed Central, Unpaywall, and Europe PMC to find open-access versions. Call this AFTER search_pubmed when user wants to download papers.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "papers": {"type": "array", "description": "List of paper objects with pmid, doi, title fields"},
+                "folder_id": {"type": "string", "description": "Drive folder ID to save papers in"}
+            },
+            "required": ["papers"]
+        }
+    },
+    {
+        "name": "get_paper_full_text",
+        "description": "Retrieve full text content of a paper for analysis. Tries Europe PMC full text, then PubMed abstract. Use this BEFORE write_literature_review to get actual paper content for a better review.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "papers": {"type": "array", "description": "List of paper objects with pmid, doi, title"},
+            },
+            "required": ["papers"]
+        }
+    },
 ]
 
 SYSTEM_PROMPT = """You are ResearchAgent — an AI research assistant that helps academics with literature search, paper writing, data analysis, and document creation.
@@ -247,6 +270,10 @@ IMPORTANT BEHAVIORS:
 6. If user selected a working folder, use that folder_id for all file operations.
 7. Present paper lists in a clear numbered format so user can say "use papers 1,3,5,7".
 8. Be conversational — explain what you're doing and ask for guidance.
+9. When user wants a review, ALWAYS: (a) search papers, (b) download PDFs to Drive folder using download_papers, (c) get full text using get_paper_full_text, (d) THEN write the review using actual paper content.
+10. NEVER say "I cannot download papers". You CAN download open-access papers. Use download_papers tool.
+11. After downloading, tell user which papers were downloaded and which were not open-access.
+12. When writing literature review, use get_paper_full_text FIRST to get actual content, not just titles.
 
 NEVER:
 - Run all tasks automatically without user input
@@ -473,6 +500,23 @@ class AIRouter:
                 from tools.code_analysis import design_pipeline, get_signal_config
                 sig = get_signal_config(params.get("signal_types"), params.get("custom_signal", ""))
                 return await design_pipeline(self, params.get("query", ""), sig, params.get("data_files", []), params.get("code_analysis", ""))
+            
+            elif name == "download_papers":
+                if not drive_token: return {"error": "Drive not connected — cannot download papers"}
+                from tools.paper_download import download_papers_to_drive
+                drive = DriveOps(drive_token)
+                target_folder = params.get("folder_id") or folder_id
+                if not target_folder: return {"error": "No working folder selected — select a folder first"}
+                return await download_papers_to_drive(drive, params.get("papers", []), target_folder)
+            
+            elif name == "get_paper_full_text":
+                from tools.paper_download import get_paper_full_text
+                papers = params.get("papers", [])
+                results = []
+                for p in papers[:10]:  # Limit to 10 papers
+                    ft = await get_paper_full_text(None, p)
+                    results.append(ft)
+                return results
             
             else:
                 return {"error": f"Unknown tool: {name}"}
