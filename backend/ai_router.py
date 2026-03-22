@@ -120,7 +120,7 @@ TOOLS = [
     },
     {
         "name": "create_google_doc",
-        "description": "Create a Google Doc in the user's Drive folder. Use for final documents, papers, reports.",
+        "description": "Create OR UPDATE a Google Doc in the user's Drive folder. If a file with the same name already exists, it UPDATES that file instead of creating a duplicate. ALWAYS use the SAME name when refining a document. Always include a References section at the end.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -133,7 +133,7 @@ TOOLS = [
     },
     {
         "name": "create_google_sheet",
-        "description": "Create a Google Sheet in the user's Drive folder. Use for data tables, statistics, paper summaries.",
+        "description": "Create OR UPDATE a Google Sheet. If same name exists, updates it instead of duplicating.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -146,7 +146,7 @@ TOOLS = [
     },
     {
         "name": "create_google_slides",
-        "description": "Create a Google Slides presentation in the user's Drive folder.",
+        "description": "Create OR UPDATE Google Slides. If same name exists, updates it instead of duplicating.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -224,7 +224,7 @@ TOOLS = [
     },
     {
         "name": "download_papers",
-        "description": "Download full-text PDFs of papers to the user's Google Drive folder. Uses PubMed Central, Unpaywall, and Europe PMC to find open-access versions. Call this AFTER search_pubmed when user wants to download papers.",
+        "description": "Download full-text PDFs of papers to the user's Google Drive folder. Uses PubMed Central, Unpaywall, and Europe PMC to find open-access versions. Has 4-second delay between downloads to avoid rate limiting. Papers that are NOT open-access are automatically saved to a separate Google Doc 'Papers_Without_Open_Access' with their titles, abstracts, and citations.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -281,11 +281,15 @@ CRITICAL RULES:
 - You CAN read full paper text. Use get_paper_full_text. NEVER say "I only have metadata".
 - ALWAYS download papers when user asks for download or review.
 - ALWAYS get full text before writing reviews.
+- ALWAYS add a References section at the end of every document you create (Google Doc, review, report, etc.). Use proper academic citation format.
+- When creating Google Docs/Sheets/Slides: if a file with the SAME NAME already exists in the folder, it will be UPDATED (not duplicated). So when the user asks to refine or modify, use the SAME file name to update the existing file.
+- When user asks to "refine", "modify", "edit", "improve", "change" a document — generate the COMPLETE updated content with the changes incorporated, using the SAME file name. The system will automatically update the existing file.
 - Present paper lists in numbered format so user can say "use papers 1,3,5,7".
 - When user says "search more" or "different terms", search again with new terms.
-- When user says "modify" or "change", work with existing content.
 - If user selected a working folder, use that folder_id for all file operations.
 - Be conversational — explain what you're doing and ask for guidance.
+- Paper downloads have a 4-second delay between each paper to avoid rate limiting.
+- For papers that cannot be downloaded (not open-access), a separate Google Doc "Papers_Without_Open_Access" is automatically created in the folder with their titles, abstracts, and citations.
 
 NEVER:
 - Say you cannot download papers (you CAN, use download_papers)
