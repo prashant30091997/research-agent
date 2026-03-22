@@ -4,7 +4,7 @@ Handles: AI chat routing, tool execution, session management, Drive integration
 """
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import os, json, time
@@ -51,7 +51,8 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     session_id: str
     messages: List[ChatMessage]
-    model: Optional[str] = None  # override default model
+    model: Optional[str] = None  # default chat model
+    tool_models: Optional[Dict[str, str]] = None  # per-tool model mapping
     drive_token: Optional[str] = None  # Google OAuth token from frontend
     working_folder_id: Optional[str] = None
 
@@ -85,6 +86,7 @@ async def chat(req: ChatRequest):
             messages=[m.dict() for m in req.messages],
             session_id=req.session_id,
             model=req.model,
+            tool_models=req.tool_models,
             drive_token=req.drive_token,
             working_folder_id=req.working_folder_id,
         )
@@ -101,6 +103,32 @@ async def chat(req: ChatRequest):
         return result
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post("/api/chat/stream")
+async def chat_stream(req: ChatRequest):
+    """
+    SSE streaming version of /api/chat.
+    Sends real-time events as tools execute:
+    - status: AI is thinking
+    - tool_start: A tool is about to run
+    - tool_done: A tool finished
+    - done: Final response ready
+    """
+    async def event_generator():
+        try:
+            async for event in ai.chat_stream(
+                messages=[m.dict() for m in req.messages],
+                session_id=req.session_id,
+                model=req.model,
+                tool_models=req.tool_models,
+                drive_token=req.drive_token,
+                working_folder_id=req.working_folder_id,
+            ):
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'data': {'message': str(e)}})}\n\n"
+    
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 # ══════════════════════════════════════════════════════════
 # DIRECT TOOL ENDPOINTS (callable independently from chat)

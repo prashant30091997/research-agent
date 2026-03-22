@@ -282,6 +282,46 @@ NEVER:
 - Skip the paper selection step"""
 
 
+def _summarize_input(tool_name, tool_input):
+    """Create a human-readable summary of what a tool is about to do"""
+    summaries = {
+        "search_pubmed": lambda i: f"Searching PubMed for: \"{i.get('query','')[:60]}\"",
+        "search_scopus": lambda i: f"Searching Scopus for: \"{i.get('query','')[:60]}\"",
+        "generate_mesh_terms": lambda i: f"Generating MeSH terms for: \"{i.get('topic','')[:60]}\"",
+        "download_papers": lambda i: f"Downloading {len(i.get('papers',[]))} papers to Drive",
+        "get_paper_full_text": lambda i: f"Reading full text of {len(i.get('papers',[]))} papers",
+        "drive_list_folders": lambda i: f"Listing Drive folders{': '+i['query'] if i.get('query') else ''}",
+        "drive_list_files": lambda i: f"Listing files in folder",
+        "drive_read_file": lambda i: f"Reading: {i.get('file_name','file')}",
+        "drive_create_folder": lambda i: f"Creating folder: {i.get('name','')}",
+        "write_literature_review": lambda i: f"Writing review on: \"{i.get('topic','')[:50]}\"",
+        "write_section": lambda i: f"Writing {i.get('section','section')} section",
+        "understand_code": lambda i: f"Analyzing {len(i.get('code_files',[]))} code files",
+        "design_pipeline": lambda i: f"Designing pipeline for: \"{i.get('query','')[:50]}\"",
+        "create_google_doc": lambda i: f"Creating Google Doc: {i.get('name','')}",
+        "create_google_sheet": lambda i: f"Creating Google Sheet: {i.get('name','')}",
+        "create_google_slides": lambda i: f"Creating Google Slides: {i.get('name','')}",
+        "generate_colab_notebook": lambda i: f"Generating Colab notebook",
+        "fetch_site_documents": lambda i: f"Fetching documents from {', '.join(i.get('sites',['sites']))}",
+        "query_site_info": lambda i: f"Getting info about: {', '.join(i.get('sites',[]))}",
+    }
+    fn = summaries.get(tool_name)
+    return fn(tool_input) if fn else f"Running {tool_name}"
+
+def _summarize_result(tool_name, result):
+    """Create a human-readable summary of what a tool returned"""
+    if isinstance(result, dict):
+        if result.get("error"): return f"❌ Error: {result['error'][:80]}"
+        if result.get("summary"): return f"✅ {result['summary']}"
+        if result.get("url"): return f"✅ Created: {result['url'][:60]}"
+        if result.get("content"): return f"✅ {len(result['content'])} chars of content"
+        if result.get("analysis"): return f"✅ Analysis complete"
+        if result.get("pipeline"): return f"✅ Pipeline designed"
+    if isinstance(result, list):
+        return f"✅ {len(result)} results"
+    return "✅ Done"
+
+
 class AIRouter:
     def __init__(self):
         self.anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
@@ -289,13 +329,13 @@ class AIRouter:
         self.default_model = os.getenv("DEFAULT_MODEL", "claude-sonnet-4-20250514")
     
     async def chat(self, messages: List[Dict], session_id: str = "", model: str = None,
-                   drive_token: str = None, working_folder_id: str = None) -> Dict:
+                   tool_models: Dict[str, str] = None, drive_token: str = None, working_folder_id: str = None, event_queue=None) -> Dict:
         """
         Main chat loop with tool calling.
-        Sends messages to AI → AI may call tools → execute tools → send results back → AI responds.
-        Loops until AI gives a final text response (no more tool calls).
+        Uses per-tool model routing when tool_models is provided.
         """
         model = model or self.default_model
+        self._tool_models = tool_models or {}  # Store for use in _execute_tool
         
         # Add working folder context if set
         system = SYSTEM_PROMPT
@@ -312,6 +352,10 @@ class AIRouter:
         max_loops = 10  # prevent infinite tool loops
         
         for loop in range(max_loops):
+            # Emit: thinking
+            if event_queue:
+                await event_queue.put({"type": "status", "data": {"step": "thinking", "message": f"AI is analyzing your request (loop {loop+1})...", "model": model}})
+            
             # Call AI
             response = await self._call_ai(system, api_messages, model, use_tools=True)
             
@@ -323,8 +367,9 @@ class AIRouter:
             text_blocks = [b.get("text", "") for b in response.get("content", []) if b.get("type") == "text"]
             
             if not tool_uses:
-                # AI gave a final text response — we're done
                 final_text = "\n".join(text_blocks)
+                if event_queue:
+                    await event_queue.put({"type": "done", "data": {"message": final_text, "tool_results": tool_results}})
                 return {"message": final_text, "tool_results": tool_results}
             
             # Execute each tool call
@@ -334,9 +379,34 @@ class AIRouter:
                 tool_input = tool_use["input"]
                 tool_id = tool_use["id"]
                 
+                # Get per-tool model
+                tool_model = self._tool_models.get(tool_name) or self._tool_models.get("chat") or self.default_model
+                if tool_name.startswith("drive_"): tool_model = self._tool_models.get("drive_ops") or tool_model
+                model_info = tool_model.split("-")
+                model_short = tool_model
+                
+                # Emit: tool starting
+                if event_queue:
+                    await event_queue.put({"type": "tool_start", "data": {
+                        "tool": tool_name, "model": tool_model,
+                        "input_summary": _summarize_input(tool_name, tool_input),
+                        "message": f"Running {tool_name}..."
+                    }})
+                
                 # Execute the tool
+                import time
+                t0 = time.time()
                 result = await self._execute_tool(tool_name, tool_input, drive_token, working_folder_id)
-                tool_results.append({"tool": tool_name, "input": tool_input, "result": result})
+                elapsed = round(time.time() - t0, 1)
+                
+                tool_results.append({"tool": tool_name, "input": tool_input, "result": result, "model": tool_model, "time": elapsed})
+                
+                # Emit: tool done
+                if event_queue:
+                    await event_queue.put({"type": "tool_done", "data": {
+                        "tool": tool_name, "model": tool_model, "time": elapsed,
+                        "result_summary": _summarize_result(tool_name, result),
+                    }})
                 
                 tool_call_results.append({
                     "type": "tool_result",
@@ -349,6 +419,25 @@ class AIRouter:
             api_messages.append({"role": "user", "content": tool_call_results})
         
         return {"message": "Reached maximum tool call limit. Please continue the conversation.", "tool_results": tool_results}
+    
+    async def chat_stream(self, messages, session_id="", model=None, tool_models=None, drive_token=None, working_folder_id=None):
+        """Streaming version — yields SSE events as tools execute"""
+        import asyncio
+        queue = asyncio.Queue()
+        
+        async def run_chat():
+            await self.chat(messages, session_id, model, tool_models, drive_token, working_folder_id, event_queue=queue)
+            await queue.put(None)  # Signal end
+        
+        task = asyncio.create_task(run_chat())
+        
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            yield event
+        
+        await task
     
     async def _call_ai(self, system: str, messages: List[Dict], model: str, use_tools: bool = True) -> Optional[Dict]:
         """Call Anthropic or Gemini API"""
@@ -408,10 +497,15 @@ class AIRouter:
             return {"content": [{"type": "text", "text": f"Gemini Error: {r.text[:500]}"}]}
     
     async def _execute_tool(self, name: str, params: Dict, drive_token: str = None, folder_id: str = None) -> Any:
-        """Execute a tool and return results"""
+        """Execute a tool and return results. Uses per-tool model routing."""
         from tools.search_pubmed import search_pubmed
         from tools.search_scopus import search_scopus
         from tools.drive_ops import DriveOps
+        
+        # Get the model assigned to this tool (fall back to default)
+        tool_model = self._tool_models.get(name) or self._tool_models.get("chat") or self.default_model
+        # Map drive-related tools to their shared key
+        if name.startswith("drive_"): tool_model = self._tool_models.get("drive_ops") or tool_model
         
         try:
             if name == "search_pubmed":
@@ -447,7 +541,7 @@ class AIRouter:
             elif name == "write_literature_review":
                 return await write_literature_review(
                     self, params.get("topic", ""), params.get("papers", []),
-                    instructions=params.get("instructions", "")
+                    instructions=params.get("instructions", ""), model=tool_model
                 )
             
             elif name == "write_section":
@@ -494,12 +588,12 @@ class AIRouter:
             
             elif name == "understand_code":
                 from tools.code_analysis import understand_code
-                return await understand_code(self, params.get("code_files", []), params.get("data_files", []), params.get("query", ""))
+                return await understand_code(self, params.get("code_files", []), params.get("data_files", []), params.get("query", ""), model=tool_model)
             
             elif name == "design_pipeline":
                 from tools.code_analysis import design_pipeline, get_signal_config
                 sig = get_signal_config(params.get("signal_types"), params.get("custom_signal", ""))
-                return await design_pipeline(self, params.get("query", ""), sig, params.get("data_files", []), params.get("code_analysis", ""))
+                return await design_pipeline(self, params.get("query", ""), sig, params.get("data_files", []), params.get("code_analysis", ""), model=tool_model)
             
             elif name == "download_papers":
                 if not drive_token: return {"error": "Drive not connected — cannot download papers"}
