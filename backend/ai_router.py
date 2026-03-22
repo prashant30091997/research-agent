@@ -343,7 +343,16 @@ class AIRouter:
     def __init__(self):
         self.anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
         self.google_key = os.getenv("GOOGLE_API_KEY", "")
-        self.default_model = os.getenv("DEFAULT_MODEL", "claude-sonnet-4-20250514")
+        # Auto-select default model based on available keys
+        configured = os.getenv("DEFAULT_MODEL", "")
+        if configured:
+            self.default_model = configured
+        elif self.anthropic_key:
+            self.default_model = "claude-sonnet-4-20250514"
+        elif self.google_key:
+            self.default_model = "gemini-2.5-flash"
+        else:
+            self.default_model = "gemini-2.5-flash"
     
     async def chat(self, messages: List[Dict], session_id: str = "", model: str = None,
                    tool_models: Dict[str, str] = None, drive_token: str = None, working_folder_id: str = None,
@@ -468,9 +477,14 @@ class AIRouter:
         if "claude" in model or "anthropic" in model:
             return await self._call_anthropic(system, messages, model, use_tools)
         elif "gemini" in model:
-            return await self._call_gemini(system, messages, model)
+            return await self._call_gemini(system, messages, model, use_tools)
         else:
-            return await self._call_anthropic(system, messages, model, use_tools)
+            # Default: try Gemini if no Anthropic key, otherwise Anthropic
+            if self.anthropic_key:
+                return await self._call_anthropic(system, messages, model, use_tools)
+            elif self.google_key:
+                return await self._call_gemini(system, messages, "gemini-2.5-flash", use_tools)
+            return {"content": [{"type": "text", "text": "No API keys configured. Add ANTHROPIC_API_KEY or GOOGLE_API_KEY to .env"}]}
     
     async def _call_anthropic(self, system: str, messages: List[Dict], model: str, use_tools: bool) -> Optional[Dict]:
         """Call Anthropic Claude API with tool use"""
@@ -501,24 +515,93 @@ class AIRouter:
             else:
                 return {"content": [{"type": "text", "text": f"API Error {r.status_code}: {r.text[:500]}"}]}
     
-    async def _call_gemini(self, system: str, messages: List[Dict], model: str) -> Optional[Dict]:
-        """Call Google Gemini API"""
+    async def _call_gemini(self, system: str, messages: List[Dict], model: str, use_tools: bool = True) -> Optional[Dict]:
+        """Call Google Gemini API with full conversation and tool calling support"""
         if not self.google_key:
-            return {"content": [{"type": "text", "text": "Google API key not configured."}]}
+            return {"content": [{"type": "text", "text": "Google API key not configured. Add GOOGLE_API_KEY to .env"}]}
         
-        # Convert to Gemini format
-        contents = [{"parts": [{"text": f"{system}\n\n{messages[-1].get('content', '')}"}]}]
+        # Convert messages to Gemini format
+        contents = []
+        for m in messages:
+            role = m.get("role", "user")
+            content = m.get("content", "")
+            
+            # Gemini uses "user" and "model" roles
+            gemini_role = "model" if role == "assistant" else "user"
+            
+            if isinstance(content, str):
+                contents.append({"role": gemini_role, "parts": [{"text": content}]})
+            elif isinstance(content, list):
+                # Tool results — convert to text for Gemini
+                parts = []
+                for item in content:
+                    if isinstance(item, dict):
+                        if item.get("type") == "tool_result":
+                            parts.append({"text": f"[Tool Result]: {item.get('content', '')}"})
+                        elif item.get("type") == "text":
+                            parts.append({"text": item.get("text", "")})
+                        elif item.get("type") == "tool_use":
+                            parts.append({"text": f"[Calling tool: {item.get('name', '')}]"})
+                        else:
+                            parts.append({"text": str(item)})
+                    else:
+                        parts.append({"text": str(item)})
+                if parts:
+                    contents.append({"role": gemini_role, "parts": parts})
+        
+        # Build request
+        payload = {
+            "contents": contents,
+            "systemInstruction": {"parts": [{"text": system}]},
+            "generationConfig": {"maxOutputTokens": 8192, "temperature": 0.7},
+        }
+        
+        # Add tool definitions in Gemini format
+        if use_tools and TOOLS:
+            gemini_tools = []
+            for tool in TOOLS:
+                gemini_tools.append({
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
+                })
+            payload["tools"] = [{"functionDeclarations": gemini_tools}]
         
         async with httpx.AsyncClient(timeout=120) as client:
             r = await client.post(
                 f"{GEMINI_API}/{model}:generateContent?key={self.google_key}",
-                json={"contents": contents, "generationConfig": {"maxOutputTokens": 4096}},
+                json=payload,
             )
-            if r.status_code == 200:
-                d = r.json()
-                text = d.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-                return {"content": [{"type": "text", "text": text}]}
-            return {"content": [{"type": "text", "text": f"Gemini Error: {r.text[:500]}"}]}
+            if r.status_code != 200:
+                return {"content": [{"type": "text", "text": f"Gemini Error ({r.status_code}): {r.text[:500]}"}]}
+            
+            d = r.json()
+            candidate = d.get("candidates", [{}])[0]
+            parts = candidate.get("content", {}).get("parts", [])
+            
+            # Convert Gemini response to Anthropic-compatible format
+            content_blocks = []
+            for part in parts:
+                if "text" in part:
+                    content_blocks.append({"type": "text", "text": part["text"]})
+                elif "functionCall" in part:
+                    fc = part["functionCall"]
+                    content_blocks.append({
+                        "type": "tool_use",
+                        "id": f"gemini_{fc['name']}_{id(fc)}",
+                        "name": fc["name"],
+                        "input": fc.get("args", {}),
+                    })
+            
+            if not content_blocks:
+                # Fallback: check for blocked or empty response
+                block_reason = candidate.get("finishReason", "")
+                if block_reason == "SAFETY":
+                    content_blocks = [{"type": "text", "text": "Response blocked by safety filters. Try rephrasing your request."}]
+                else:
+                    content_blocks = [{"type": "text", "text": "No response generated. Try again."}]
+            
+            return {"content": content_blocks}
     
     async def _execute_tool(self, name: str, params: Dict, drive_token: str = None, folder_id: str = None) -> Any:
         """Execute a tool and return results. Uses per-tool model routing."""
