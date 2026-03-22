@@ -109,6 +109,12 @@ export default function App() {
   // ── Sidebar ──
   const [showHistory, setShowHistory] = useState(false);
   const [sessions, setSessions] = useState([]);
+  const [historyFolder, setHistoryFolder] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("ra_history_folder")); } catch { return null; }
+  });
+  const [showHistoryFolderPicker, setShowHistoryFolderPicker] = useState(false);
+  const [historyFolders, setHistoryFolders] = useState([]);
+  const [historySearch, setHistorySearch] = useState("");
 
   // ── Drive Browser ──
   const [showDrive, setShowDrive] = useState(false);
@@ -264,6 +270,13 @@ export default function App() {
     setToolActivity(prev => prev.map(a => ({ ...a, status: "done" })));
     // Refresh session list so new session appears in history
     fetch(`${backendUrl}/api/session/list`).then(r => r.json()).then(d => setSessions(d.sessions || [])).catch(() => {});
+    // Auto-save session to Drive history folder
+    if (driveToken && historyFolder?.id) {
+      fetch(`${backendUrl}/api/session/save`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, drive_token: driveToken, history_folder_id: historyFolder.id }),
+      }).catch(() => {});
+    }
   };
 
   const TOOL_ICONS = {
@@ -414,21 +427,82 @@ export default function App() {
   const FILE_CAT_ICONS = { code: "🐍", data: "📊", doc: "📄", other: "📎" };
   const FILE_CAT_COLORS = { code: "#34d399", data: "#60a5fa", doc: "#fbbf24", other: "#8899b0" };
 
+  // ── HISTORY FOLDER BROWSER ──
+  const browseHistoryFolders = async (folderId = "root") => {
+    if (!driveToken) { connectDrive(); return; }
+    try {
+      let q = `mimeType='application/vnd.google-apps.folder' and trashed=false`;
+      q += folderId === "root" ? ` and 'root' in parents` : ` and '${folderId}' in parents`;
+      const r = await fetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=50&orderBy=name&supportsAllDrives=true&includeItemsFromAllDrives=true`, {
+        headers: { "Authorization": `Bearer ${driveToken}` },
+      });
+      const d = await r.json();
+      setHistoryFolders(d.files || []);
+    } catch { }
+  };
+
+  const searchHistoryFolders = async () => {
+    if (!driveToken || !historySearch.trim()) return;
+    try {
+      const q = `mimeType='application/vnd.google-apps.folder' and name contains '${historySearch}' and trashed=false`;
+      const r = await fetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=30&supportsAllDrives=true&includeItemsFromAllDrives=true&corpora=allDrives`, {
+        headers: { "Authorization": `Bearer ${driveToken}` },
+      });
+      const d = await r.json();
+      setHistoryFolders(d.files || []);
+    } catch { }
+  };
+
+  const selectHistoryFolder = (folder) => {
+    setHistoryFolder(folder);
+    localStorage.setItem("ra_history_folder", JSON.stringify(folder));
+    setShowHistoryFolderPicker(false);
+    // Load sessions from this folder
+    loadSessions();
+  };
+
   // ── Load Sessions ──
   const loadSessions = async () => {
     try {
       const r = await fetch(`${backendUrl}/api/session/list`);
       const d = await r.json();
-      setSessions(d.sessions || []);
+      let allSessions = d.sessions || [];
+      
+      // Also load from Drive if history folder is set
+      if (driveToken && historyFolder?.id) {
+        try {
+          const dr = await api("/api/session/list_drive", { drive_token: driveToken, history_folder_id: historyFolder.id });
+          const driveSessions = dr.sessions || [];
+          // Merge: Drive sessions that aren't already local
+          const localIds = new Set(allSessions.map(s => s.id));
+          for (const ds of driveSessions) {
+            if (!localIds.has(ds.id)) {
+              allSessions.push({ ...ds, fromDrive: true });
+            } else {
+              // Mark local session as drive-synced
+              const local = allSessions.find(s => s.id === ds.id);
+              if (local) local.drive_synced = true;
+            }
+          }
+        } catch { }
+      }
+      
+      setSessions(allSessions);
     } catch { }
   };
 
-  const loadSession = async (sid) => {
+  const loadSession = async (session) => {
     try {
-      const r = await api("/api/session/load", { session_id: sid });
-      if (r.messages) {
-        setSessionId(sid);
-        setMessages(r.messages);
+      let data;
+      if (session.fromDrive && session.drive_file_id) {
+        // Load from Drive
+        data = await api("/api/session/load", { session_id: session.id, drive_token: driveToken, drive_file_id: session.drive_file_id });
+      } else {
+        data = await api("/api/session/load", { session_id: session.id });
+      }
+      if (data.messages) {
+        setSessionId(data.id || session.id);
+        setMessages(data.messages);
         setShowHistory(false);
       }
     } catch { }
@@ -562,14 +636,40 @@ export default function App() {
             <span style={{ fontSize: "10px", fontWeight: 600, color: "#4e6380", textTransform: "uppercase" }}>History</span>
             <button onClick={loadSessions} style={{ fontSize: "9px", color: "#60a5fa", background: "none", border: "none", cursor: "pointer" }}>Refresh</button>
           </div>
+
+          {/* History Folder */}
+          <div style={{ padding: "4px 8px", marginBottom: "6px" }}>
+            {historyFolder ? (
+              <div style={{ fontSize: "10px", display: "flex", alignItems: "center", gap: "4px" }}>
+                <span style={{ color: "#34d399" }}>☁️</span>
+                <span style={{ color: "#34d399", fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{historyFolder.name}</span>
+                <button onClick={() => { setHistoryFolder(null); localStorage.removeItem("ra_history_folder"); }} style={{ fontSize: "8px", color: "#f87171", background: "none", border: "none", cursor: "pointer" }}>×</button>
+              </div>
+            ) : (
+              <button onClick={() => { setShowHistoryFolderPicker(true); if (driveToken) browseHistoryFolders(); else connectDrive(); }}
+                style={{ width: "100%", padding: "5px", borderRadius: "4px", border: "1px dashed #1a2540", background: "transparent", color: "#4e6380", fontSize: "9px", cursor: "pointer" }}>
+                📂 Set History Folder in Drive
+              </button>
+            )}
+          </div>
+
+          {sessions.length === 0 && <div style={{ padding: "12px 8px", textAlign: "center", color: "#2a3550", fontSize: "10px" }}>No sessions yet. Start chatting!</div>}
+
           {sessions.map(s => (
-            <div key={s.id} onClick={() => loadSession(s.id)} style={{
+            <div key={s.id + (s.fromDrive ? "_d" : "")} onClick={() => loadSession(s)} style={{
               padding: "8px", borderRadius: "6px", marginBottom: "3px", cursor: "pointer",
               background: sessionId === s.id ? "#00e5a010" : "#0f1520",
               border: `1px solid ${sessionId === s.id ? "#00e5a030" : "#1a2540"}`,
             }}>
-              <div style={{ fontSize: "10px", fontWeight: 600, color: sessionId === s.id ? "#00e5a0" : "#c8d4e0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.preview}</div>
-              <div style={{ fontSize: "9px", color: "#4e6380", marginTop: "2px" }}>{s.message_count} messages {s.pinned && "📌"}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                {s.fromDrive && <span style={{ fontSize: "8px" }}>☁️</span>}
+                {s.drive_synced && <span style={{ fontSize: "8px" }}>✅</span>}
+                <div style={{ fontSize: "10px", fontWeight: 600, color: sessionId === s.id ? "#00e5a0" : "#c8d4e0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{s.title || s.preview || "Empty"}</div>
+                {s.pinned && <span style={{ fontSize: "8px" }}>📌</span>}
+              </div>
+              <div style={{ fontSize: "9px", color: "#4e6380", marginTop: "2px" }}>
+                {s.message_count || 0} msgs {s.updated_str || s.created_str || ""}
+              </div>
             </div>
           ))}
         </div>
@@ -1032,6 +1132,38 @@ export default function App() {
             <button onClick={() => setShowFilePicker(false)} style={{ padding: "8px 20px", borderRadius: "6px", border: "none", background: "#00e5a0", color: "#000", fontWeight: 700, fontSize: "11px", cursor: "pointer" }}>
               ✓ Done
             </button>
+          </div>
+        </div>
+      </>}
+
+      {/* ═══ HISTORY FOLDER PICKER MODAL ═══ */}
+      {showHistoryFolderPicker && <>
+        <div onClick={() => setShowHistoryFolderPicker(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 200 }} />
+        <div style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", width: "440px", maxHeight: "70vh", background: "#0a0f18", border: "1px solid #1a2540", borderRadius: "12px", zIndex: 201, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          <div style={{ padding: "14px 16px", borderBottom: "1px solid #1a2540", display: "flex", justifyContent: "space-between" }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: "14px" }}>📂 Choose History Folder</div>
+              <div style={{ fontSize: "10px", color: "#4e6380", marginTop: "2px" }}>Sessions will be auto-saved here as JSON</div>
+            </div>
+            <button onClick={() => setShowHistoryFolderPicker(false)} style={{ background: "none", border: "none", color: "#8899b0", cursor: "pointer", fontSize: "18px" }}>×</button>
+          </div>
+          <div style={{ padding: "8px 16px", borderBottom: "1px solid #1a2540", display: "flex", gap: "6px" }}>
+            <input value={historySearch} onChange={e => setHistorySearch(e.target.value)} onKeyDown={e => e.key === "Enter" && searchHistoryFolders()}
+              placeholder="Search folders..." style={{ flex: 1, padding: "6px 10px", borderRadius: "4px", border: "1px solid #1a2540", background: "#0f1520", color: "#e0e8f4", fontSize: "11px", outline: "none" }} />
+            <button onClick={searchHistoryFolders} style={{ padding: "6px 10px", borderRadius: "4px", border: "none", background: "#4285f4", color: "#fff", fontSize: "10px", fontWeight: 600, cursor: "pointer" }}>🔍</button>
+            <button onClick={() => browseHistoryFolders("root")} style={{ padding: "6px 10px", borderRadius: "4px", border: "1px solid #1a2540", background: "transparent", color: "#8899b0", fontSize: "10px", cursor: "pointer" }}>Root</button>
+          </div>
+          <div style={{ flex: 1, overflow: "auto", padding: "6px 12px" }}>
+            {historyFolders.map(f => (
+              <div key={f.id} onClick={() => selectHistoryFolder(f)} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 10px", borderRadius: "6px", marginBottom: "2px", cursor: "pointer", background: "#0f1520", border: "1px solid #1a2540" }}>
+                <span>📁</span>
+                <div style={{ fontSize: "11px", fontWeight: 600, color: "#e0e8f4" }}>{f.name}</div>
+              </div>
+            ))}
+            {historyFolders.length === 0 && <div style={{ textAlign: "center", padding: "20px", color: "#4e6380", fontSize: "11px" }}>Search for a folder or browse from root</div>}
+          </div>
+          <div style={{ padding: "10px 16px", borderTop: "1px solid #1a2540", fontSize: "10px", color: "#4e6380" }}>
+            Click a folder to set it as your history folder. Each session saves as a subfolder with session.json inside.
           </div>
         </div>
       </>}
