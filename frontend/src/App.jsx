@@ -20,18 +20,84 @@ export default function App() {
   const [driveToken, setDriveToken] = useState("");
   const [driveConnected, setDriveConnected] = useState(false);
   const [workingFolder, setWorkingFolder] = useState(null);
-  const [selectedModel, setSelectedModel] = useState(localStorage.getItem("ra_model") || "claude-sonnet-4-20250514");
 
   // Available models
   const MODELS = [
-    { id: "claude-opus-4-6", name: "Claude Opus 4.6", icon: "◆", color: "#a78bfa", tier: "Flagship", provider: "Anthropic" },
-    { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4", icon: "●", color: "#34d399", tier: "Balanced", provider: "Anthropic" },
-    { id: "claude-haiku-4-5-20251001", name: "Claude Haiku 4.5", icon: "▲", color: "#60a5fa", tier: "Fast", provider: "Anthropic" },
-    { id: "gemini-3.1-pro", name: "Gemini 3.1 Pro", icon: "◇", color: "#4285F4", tier: "Flagship", provider: "Google" },
-    { id: "gemini-3-flash", name: "Gemini 3 Flash", icon: "◇", color: "#EA4335", tier: "Balanced", provider: "Google" },
-    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", icon: "◇", color: "#FBBC04", tier: "Fast", provider: "Google" },
-    { id: "gemini-2.5-flash-lite", name: "Gemini 2.5 Lite", icon: "◇", color: "#FBBC04", tier: "Budget", provider: "Google" },
+    { id: "claude-opus-4-6", name: "Opus 4.6", full: "Claude Opus 4.6", icon: "◆", color: "#a78bfa", tier: "Flagship", provider: "Anthropic" },
+    { id: "claude-sonnet-4-20250514", name: "Sonnet 4", full: "Claude Sonnet 4", icon: "●", color: "#34d399", tier: "Balanced", provider: "Anthropic" },
+    { id: "claude-haiku-4-5-20251001", name: "Haiku 4.5", full: "Claude Haiku 4.5", icon: "▲", color: "#60a5fa", tier: "Fast", provider: "Anthropic" },
+    { id: "gemini-3.1-pro", name: "Gem 3.1 Pro", full: "Gemini 3.1 Pro", icon: "◇", color: "#4285F4", tier: "Flagship", provider: "Google" },
+    { id: "gemini-3-flash", name: "Gem 3 Flash", full: "Gemini 3 Flash", icon: "◇", color: "#EA4335", tier: "Balanced", provider: "Google" },
+    { id: "gemini-2.5-flash", name: "Gem 2.5 Flash", full: "Gemini 2.5 Flash", icon: "◇", color: "#FBBC04", tier: "Fast", provider: "Google" },
+    { id: "gemini-2.5-flash-lite", name: "Gem Lite", full: "Gemini 2.5 Lite", icon: "◇", color: "#FBBC04", tier: "Budget", provider: "Google" },
   ];
+
+  // ── PER-TOOL MODEL ROUTING ──
+  const TOOL_LIST = [
+    { key: "chat", label: "💬 Chat / General", desc: "Default model for conversation" },
+    { key: "search_pubmed", label: "🔬 PubMed Search", desc: "MeSH terms + paper search" },
+    { key: "search_scopus", label: "🔬 Scopus Search", desc: "Elsevier database search" },
+    { key: "download_papers", label: "⬇️ Download Papers", desc: "Find & download open-access PDFs" },
+    { key: "get_paper_full_text", label: "📖 Read Full Text", desc: "Extract full text from papers" },
+    { key: "write_literature_review", label: "📝 Literature Review", desc: "Write comprehensive review" },
+    { key: "write_section", label: "✍️ Write Section", desc: "Results, discussion, methodology" },
+    { key: "understand_code", label: "🧠 Understand Code", desc: "Analyze .py files and pipeline" },
+    { key: "design_pipeline", label: "🏗️ Design Pipeline", desc: "Design analysis pipeline" },
+    { key: "create_google_doc", label: "📄 Google Doc", desc: "Create document in Drive" },
+    { key: "create_google_sheet", label: "📊 Google Sheet", desc: "Create spreadsheet in Drive" },
+    { key: "create_google_slides", label: "📑 Google Slides", desc: "Create presentation in Drive" },
+    { key: "generate_colab_notebook", label: "📓 Colab Notebook", desc: "Generate analysis notebook" },
+    { key: "fetch_site_documents", label: "🌐 Site Documents", desc: "ICMR/WHO/NIH documents" },
+    { key: "drive_ops", label: "📁 Drive Operations", desc: "List folders, files, create folders" },
+  ];
+
+  const DEFAULT_TOOL_MODELS = {
+    chat: "claude-sonnet-4-20250514",
+    search_pubmed: "claude-sonnet-4-20250514",
+    search_scopus: "claude-sonnet-4-20250514",
+    download_papers: "claude-haiku-4-5-20251001",
+    get_paper_full_text: "claude-haiku-4-5-20251001",
+    write_literature_review: "claude-opus-4-6",
+    write_section: "claude-opus-4-6",
+    understand_code: "claude-opus-4-6",
+    design_pipeline: "claude-opus-4-6",
+    create_google_doc: "claude-sonnet-4-20250514",
+    create_google_sheet: "claude-sonnet-4-20250514",
+    create_google_slides: "claude-sonnet-4-20250514",
+    generate_colab_notebook: "claude-sonnet-4-20250514",
+    fetch_site_documents: "claude-sonnet-4-20250514",
+    drive_ops: "claude-haiku-4-5-20251001",
+  };
+
+  const [toolModels, setToolModels] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("ra_tool_models")) || DEFAULT_TOOL_MODELS; }
+    catch { return DEFAULT_TOOL_MODELS; }
+  });
+
+  // ── READER PANEL (full response viewer) ──
+  const [readerOpen, setReaderOpen] = useState(false);
+  const [readerIndex, setReaderIndex] = useState(-1);
+
+  // ── TOOL ACTIVITY PANEL ──
+  const [toolActivity, setToolActivity] = useState([]); // [{tool, status, model, message, time, result_summary}]
+  const [showActivity, setShowActivity] = useState(true); // visible by default during execution // index in messages array
+
+  const assistantMessages = messages.filter(m => m.role === "assistant");
+  const readerMsg = readerIndex >= 0 && readerIndex < assistantMessages.length ? assistantMessages[readerIndex] : null;
+
+  const readerPrev = () => setReaderIndex(i => Math.max(0, i - 1));
+  const readerNext = () => setReaderIndex(i => Math.min(assistantMessages.length - 1, i + 1));
+  const openReader = (msgIndex) => {
+    const aiIdx = assistantMessages.indexOf(messages[msgIndex]);
+    if (aiIdx >= 0) { setReaderIndex(aiIdx); setReaderOpen(true); }
+  };
+
+  // Summary: first 200 chars of assistant response
+  const summarize = (content) => {
+    if (!content) return "";
+    const clean = content.replace(/[#*_`>]/g, "").trim();
+    return clean.length > 200 ? clean.slice(0, 200) + "..." : clean;
+  };
 
   // ── Sidebar ──
   const [showHistory, setShowHistory] = useState(false);
@@ -77,7 +143,7 @@ export default function App() {
     } catch { setSessionId(`local_${Date.now()}`); }
   };
 
-  // ── Send Message ──
+  // ── Send Message (with SSE streaming for live tool activity) ──
   const sendMessage = async () => {
     if (!input.trim() || isLoading) return;
     const userMsg = { role: "user", content: input.trim() };
@@ -85,26 +151,117 @@ export default function App() {
     setMessages(newMessages);
     setInput("");
     setIsLoading(true);
+    setToolActivity([]);
+    setShowActivity(true);
 
     try {
-      const result = await api("/api/chat", {
-        session_id: sessionId,
-        messages: newMessages.map(m => ({ role: m.role, content: m.content })),
-        model: selectedModel,
-        drive_token: driveToken,
-        working_folder_id: workingFolder?.id,
+      const response = await fetch(`${backendUrl}/api/chat/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: sessionId,
+          messages: newMessages.map(m => ({ role: m.role, content: m.content })),
+          model: toolModels.chat,
+          tool_models: toolModels,
+          drive_token: driveToken,
+          working_folder_id: workingFolder?.id,
+        }),
       });
 
-      const assistantMsg = {
-        role: "assistant",
-        content: result.message || "No response",
-        tool_results: result.tool_results || [],
-      };
-      setMessages(prev => [...prev, assistantMsg]);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finalResult = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const event = JSON.parse(line.slice(6));
+
+              if (event.type === "status") {
+                setToolActivity(prev => [...prev, {
+                  tool: "ai_thinking", status: "running", model: event.data.model,
+                  message: event.data.message, time: null, icon: "🧠",
+                }]);
+              } else if (event.type === "tool_start") {
+                setToolActivity(prev => {
+                  // Mark previous thinking as done
+                  const updated = prev.map(a => a.tool === "ai_thinking" && a.status === "running" ? { ...a, status: "done" } : a);
+                  return [...updated, {
+                    tool: event.data.tool, status: "running", model: event.data.model,
+                    message: event.data.input_summary || event.data.message,
+                    time: null, icon: TOOL_ICONS[event.data.tool] || "⚙️",
+                  }];
+                });
+              } else if (event.type === "tool_done") {
+                setToolActivity(prev => prev.map(a =>
+                  a.tool === event.data.tool && a.status === "running"
+                    ? { ...a, status: "done", time: event.data.time, result_summary: event.data.result_summary }
+                    : a
+                ));
+              } else if (event.type === "done") {
+                finalResult = event.data;
+              } else if (event.type === "error") {
+                finalResult = { message: `⚠️ Error: ${event.data.message}`, tool_results: [] };
+              }
+            } catch { }
+          }
+        }
+      }
+
+      // If SSE completed with final result
+      if (finalResult) {
+        setMessages(prev => [...prev, {
+          role: "assistant", content: finalResult.message || "No response",
+          tool_results: finalResult.tool_results || [],
+        }]);
+      } else {
+        // Fallback: try regular endpoint
+        const result = await api("/api/chat", {
+          session_id: sessionId,
+          messages: newMessages.map(m => ({ role: m.role, content: m.content })),
+          model: toolModels.chat, tool_models: toolModels,
+          drive_token: driveToken, working_folder_id: workingFolder?.id,
+        });
+        setMessages(prev => [...prev, { role: "assistant", content: result.message || "No response", tool_results: result.tool_results || [] }]);
+      }
     } catch (e) {
-      setMessages(prev => [...prev, { role: "assistant", content: `⚠️ Error: ${e.message}\n\nMake sure the backend is running at: ${backendUrl}\n\nIf using Colab, check the ngrok URL in Settings.` }]);
+      // Full fallback to non-streaming
+      try {
+        const result = await api("/api/chat", {
+          session_id: sessionId,
+          messages: newMessages.map(m => ({ role: m.role, content: m.content })),
+          model: toolModels.chat, tool_models: toolModels,
+          drive_token: driveToken, working_folder_id: workingFolder?.id,
+        });
+        setMessages(prev => [...prev, { role: "assistant", content: result.message || "No response", tool_results: result.tool_results || [] }]);
+      } catch (e2) {
+        setMessages(prev => [...prev, { role: "assistant", content: `⚠️ Error: ${e2.message}\n\nBackend: ${backendUrl}` }]);
+      }
     }
     setIsLoading(false);
+    // Mark all activities as done
+    setToolActivity(prev => prev.map(a => ({ ...a, status: "done" })));
+  };
+
+  const TOOL_ICONS = {
+    search_pubmed: "🔬", search_scopus: "🔬", generate_mesh_terms: "🧬",
+    download_papers: "⬇️", get_paper_full_text: "📖",
+    drive_list_folders: "📁", drive_list_files: "📂", drive_read_file: "📄", drive_create_folder: "📁",
+    write_literature_review: "📝", write_section: "✍️",
+    understand_code: "🧠", design_pipeline: "🏗️",
+    create_google_doc: "📄", create_google_sheet: "📊", create_google_slides: "📑",
+    generate_colab_notebook: "📓",
+    fetch_site_documents: "🌐", query_site_info: "🔎",
+    ai_thinking: "🧠",
   };
 
   // ── Google Drive Connection ──
@@ -354,21 +511,92 @@ export default function App() {
         </div>
       </div>
 
+      {/* ── TOOL ACTIVITY PANEL ── */}
+      {(showActivity && (isLoading || toolActivity.length > 0)) && <div style={{ width: "240px", borderRight: "1px solid #1a2540", background: "#080c14", display: "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden" }}>
+        {/* Header */}
+        <div style={{ padding: "10px 12px", borderBottom: "1px solid #1a2540", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: "11px", fontWeight: 700, color: "#00e5a0" }}>⚡ Tool Activity</div>
+          <div style={{ display: "flex", gap: "4px", alignItems: "center" }}>
+            {isLoading && <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#00e5a0", animation: "pulse 1s infinite" }} />}
+            <button onClick={() => setShowActivity(false)} style={{ background: "none", border: "none", color: "#4e6380", cursor: "pointer", fontSize: "14px", lineHeight: 1 }}>×</button>
+          </div>
+        </div>
+
+        {/* Activity List */}
+        <div style={{ flex: 1, overflow: "auto", padding: "6px" }}>
+          {toolActivity.length === 0 && isLoading && (
+            <div style={{ padding: "16px 8px", textAlign: "center", color: "#4e6380", fontSize: "10px" }}>
+              <div style={{ fontSize: "16px", marginBottom: "6px", animation: "pulse 1s infinite" }}>🧠</div>
+              Waiting for AI to decide which tools to use...
+            </div>
+          )}
+
+          {toolActivity.map((act, i) => {
+            const m = MODELS.find(x => x.id === act.model);
+            return (
+              <div key={i} style={{
+                padding: "8px 10px", borderRadius: "6px", marginBottom: "3px",
+                background: act.status === "running" ? "#00e5a008" : "#0a0f18",
+                border: `1px solid ${act.status === "running" ? "#00e5a025" : "#1a254020"}`,
+                transition: "all .3s",
+              }}>
+                {/* Tool header */}
+                <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "3px" }}>
+                  <span style={{ fontSize: "12px" }}>{act.icon || "⚙️"}</span>
+                  <span style={{ fontSize: "10px", fontWeight: 700, color: act.status === "running" ? "#00e5a0" : "#c8d4e0", flex: 1 }}>
+                    {act.tool === "ai_thinking" ? "AI Thinking" : act.tool}
+                  </span>
+                  {act.status === "running" ? (
+                    <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#00e5a0", animation: "pulse 1s infinite" }} />
+                  ) : (
+                    <span style={{ fontSize: "9px", color: "#34d399" }}>✓</span>
+                  )}
+                </div>
+
+                {/* What it's doing */}
+                <div style={{ fontSize: "9px", color: "#8899b0", lineHeight: "1.4", paddingLeft: "18px" }}>
+                  {act.message}
+                </div>
+
+                {/* Model + time */}
+                <div style={{ display: "flex", gap: "6px", alignItems: "center", paddingLeft: "18px", marginTop: "3px" }}>
+                  {m && <span style={{ fontSize: "8px", color: m.color, fontWeight: 600 }}>{m.icon} {m.name}</span>}
+                  {act.time && <span style={{ fontSize: "8px", color: "#4e6380" }}>{act.time}s</span>}
+                </div>
+
+                {/* Result summary */}
+                {act.result_summary && <div style={{ fontSize: "9px", color: "#34d399", paddingLeft: "18px", marginTop: "2px" }}>
+                  {act.result_summary}
+                </div>}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Footer stats */}
+        <div style={{ padding: "6px 12px", borderTop: "1px solid #1a2540", fontSize: "9px", color: "#4e6380", display: "flex", justifyContent: "space-between" }}>
+          <span>{toolActivity.filter(a => a.status === "done").length} / {toolActivity.length} done</span>
+          <span>{toolActivity.filter(a => a.tool !== "ai_thinking").reduce((s, a) => s + (a.time || 0), 0).toFixed(1)}s total</span>
+        </div>
+      </div>}
+
       {/* ── MAIN CHAT AREA ── */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         {/* Header */}
         <div style={{ padding: "10px 20px", borderBottom: "1px solid #1a2540", display: "flex", justifyContent: "space-between", alignItems: "center", background: "#0a0f18" }}>
           <div style={{ fontSize: "12px", color: "#8899b0" }}>Session: <span style={{ color: "#00e5a0", fontFamily: "monospace" }}>{sessionId?.slice(0, 20)}</span></div>
-          <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-            <div style={{ fontSize: "10px", display: "flex", alignItems: "center", gap: "4px" }}>
-              <span style={{ color: MODELS.find(m => m.id === selectedModel)?.color || "#00e5a0" }}>
-                {MODELS.find(m => m.id === selectedModel)?.icon || "●"}
-              </span>
-              <span style={{ color: MODELS.find(m => m.id === selectedModel)?.color || "#c8d4e0", fontWeight: 600 }}>
-                {MODELS.find(m => m.id === selectedModel)?.name || selectedModel}
-              </span>
-            </div>
-            <div style={{ fontSize: "10px", color: "#4e6380" }}>Backend: <span style={{ color: backendUrl.includes("localhost") ? "#fbbf24" : "#34d399" }}>{backendUrl.slice(0, 40)}</span></div>
+          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            {/* Show unique models in use */}
+            {[...new Set(Object.values(toolModels))].slice(0, 3).map(mid => {
+              const m = MODELS.find(x => x.id === mid);
+              return m ? <span key={mid} style={{ fontSize: "9px", display: "flex", alignItems: "center", gap: "2px", color: m.color }}>{m.icon} {m.name}</span> : null;
+            })}
+            <button onClick={() => setShowActivity(!showActivity)} style={{ padding: "3px 8px", borderRadius: "4px", border: `1px solid ${showActivity ? "#00e5a040" : "#1a2540"}`, background: showActivity ? "#00e5a010" : "transparent", color: showActivity ? "#00e5a0" : "#4e6380", fontSize: "10px", cursor: "pointer", fontWeight: 600 }}>
+              ⚡ {toolActivity.filter(a => a.status === "running").length > 0 ? `${toolActivity.filter(a => a.status === "running").length} running` : "Tools"}
+            </button>
+            <button onClick={() => setReaderOpen(!readerOpen)} style={{ padding: "3px 8px", borderRadius: "4px", border: `1px solid ${readerOpen ? "#00e5a040" : "#1a2540"}`, background: readerOpen ? "#00e5a010" : "transparent", color: readerOpen ? "#00e5a0" : "#4e6380", fontSize: "10px", cursor: "pointer", fontWeight: 600 }}>
+              {readerOpen ? "✕ Close Reader" : "📖 Reader"}
+            </button>
           </div>
         </div>
 
@@ -404,14 +632,27 @@ export default function App() {
                 marginBottom: "12px",
               }}>
                 <div style={{
-                  maxWidth: "85%", padding: "12px 16px", borderRadius: "12px",
+                  maxWidth: msg.role === "assistant" && !readerOpen ? "85%" : "85%",
+                  padding: "12px 16px", borderRadius: "12px",
                   background: msg.role === "user" ? "#1a3560" : "#0f1520",
                   border: `1px solid ${msg.role === "user" ? "#253560" : "#1a2540"}`,
                   lineHeight: "1.6",
                 }}>
-                  {msg.role === "assistant" && <div style={{ fontSize: "10px", color: "#00e5a0", fontWeight: 600, marginBottom: "4px" }}>🧬 ResearchAgent</div>}
-                  <MessageContent content={msg.content} />
-                  {msg.tool_results?.map((tr, j) => <ToolResult key={j} result={tr} />)}
+                  {msg.role === "assistant" && <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
+                    <div style={{ fontSize: "10px", color: "#00e5a0", fontWeight: 600 }}>🧬 ResearchAgent</div>
+                    <button onClick={() => openReader(i)} style={{ fontSize: "9px", color: "#60a5fa", background: "none", border: "1px solid #60a5fa30", borderRadius: "4px", padding: "2px 8px", cursor: "pointer" }}>📖 Read Full</button>
+                  </div>}
+                  {/* Show summary for assistant, full for user */}
+                  {msg.role === "assistant" ? (
+                    <div>
+                      <div style={{ fontSize: "12px", color: "#c8d4e0" }}>{summarize(msg.content)}</div>
+                      {msg.tool_results?.length > 0 && <div style={{ fontSize: "10px", color: "#8899b0", marginTop: "4px" }}>
+                        🔧 Used {msg.tool_results.length} tool{msg.tool_results.length > 1 ? "s" : ""}: {msg.tool_results.map(tr => tr.tool).join(", ")}
+                      </div>}
+                    </div>
+                  ) : (
+                    <MessageContent content={msg.content} />
+                  )}
                 </div>
               </div>
             ))}
@@ -448,6 +689,51 @@ export default function App() {
         </div>
       </div>
 
+      {/* ═══ READER PANEL (right side) ═══ */}
+      {readerOpen && <div style={{ width: "380px", borderLeft: "1px solid #1a2540", background: "#0a0f18", display: "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden" }}>
+        {/* Reader Header with arrows */}
+        <div style={{ padding: "10px 14px", borderBottom: "1px solid #1a2540", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <button onClick={readerPrev} disabled={readerIndex <= 0} style={{ width: 28, height: 28, borderRadius: "6px", border: "1px solid #1a2540", background: readerIndex > 0 ? "#0f1520" : "transparent", color: readerIndex > 0 ? "#e0e8f4" : "#2a3550", fontSize: "14px", cursor: readerIndex > 0 ? "pointer" : "default", display: "flex", alignItems: "center", justifyContent: "center" }}>←</button>
+            <span style={{ fontSize: "11px", color: "#8899b0", fontFamily: "monospace" }}>{assistantMessages.length > 0 ? `${readerIndex + 1} / ${assistantMessages.length}` : "0 / 0"}</span>
+            <button onClick={readerNext} disabled={readerIndex >= assistantMessages.length - 1} style={{ width: 28, height: 28, borderRadius: "6px", border: "1px solid #1a2540", background: readerIndex < assistantMessages.length - 1 ? "#0f1520" : "transparent", color: readerIndex < assistantMessages.length - 1 ? "#e0e8f4" : "#2a3550", fontSize: "14px", cursor: readerIndex < assistantMessages.length - 1 ? "pointer" : "default", display: "flex", alignItems: "center", justifyContent: "center" }}>→</button>
+          </div>
+          <div style={{ fontSize: "12px", fontWeight: 700, color: "#00e5a0" }}>📖 Reader</div>
+          <button onClick={() => setReaderOpen(false)} style={{ background: "none", border: "none", color: "#8899b0", cursor: "pointer", fontSize: "16px" }}>×</button>
+        </div>
+
+        {/* Reader Content */}
+        <div style={{ flex: 1, overflow: "auto", padding: "16px" }}>
+          {readerMsg ? (
+            <div>
+              <div style={{ fontSize: "10px", color: "#00e5a0", fontWeight: 600, marginBottom: "8px", display: "flex", alignItems: "center", gap: "6px" }}>
+                🧬 Response {readerIndex + 1}
+                {readerMsg.tool_results?.length > 0 && <span style={{ fontSize: "9px", color: "#60a5fa", background: "#60a5fa15", padding: "1px 6px", borderRadius: "3px" }}>🔧 {readerMsg.tool_results.length} tools</span>}
+              </div>
+              
+              {/* Full content */}
+              <div style={{ fontSize: "13px", lineHeight: "1.7", color: "#c8d4e0" }}>
+                <MessageContent content={readerMsg.content} />
+              </div>
+
+              {/* Tool results */}
+              {readerMsg.tool_results?.map((tr, j) => <ToolResult key={j} result={tr} />)}
+            </div>
+          ) : (
+            <div style={{ textAlign: "center", padding: "40px 20px", color: "#4e6380" }}>
+              <div style={{ fontSize: "24px", marginBottom: "8px", opacity: 0.3 }}>📖</div>
+              <div style={{ fontSize: "12px" }}>Click "Read Full" on any response<br />or use ← → arrows to navigate</div>
+            </div>
+          )}
+        </div>
+
+        {/* Reader footer with quick actions */}
+        {readerMsg && <div style={{ padding: "8px 14px", borderTop: "1px solid #1a2540", display: "flex", gap: "6px" }}>
+          <button onClick={() => navigator.clipboard?.writeText(readerMsg.content)} style={{ flex: 1, padding: "6px", borderRadius: "4px", border: "1px solid #1a2540", background: "transparent", color: "#8899b0", fontSize: "10px", cursor: "pointer" }}>📋 Copy Text</button>
+          <button onClick={() => { setInput(`Modify the above response: `); setReaderOpen(false); }} style={{ flex: 1, padding: "6px", borderRadius: "4px", border: "1px solid #00e5a030", background: "#00e5a010", color: "#00e5a0", fontSize: "10px", cursor: "pointer" }}>✏️ Modify</button>
+        </div>}
+      </div>}
+
       {/* ═══ SETTINGS PANEL (overlay) ═══ */}
       {showSettings && <>
         <div onClick={() => setShowSettings(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 100 }} />
@@ -474,28 +760,40 @@ export default function App() {
             />
           </div>
 
-          {/* Model Selection */}
+          {/* Per-Tool Model Routing */}
           <div style={{ marginBottom: "16px" }}>
-            <label style={{ fontSize: "11px", fontWeight: 600, color: "#8899b0", display: "block", marginBottom: "8px" }}>🤖 AI Model</label>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px" }}>
-              {MODELS.map(m => (
-                <button key={m.id} onClick={() => { setSelectedModel(m.id); localStorage.setItem("ra_model", m.id); }}
-                  style={{
-                    padding: "8px 10px", borderRadius: "6px", cursor: "pointer", textAlign: "left",
-                    border: `1px solid ${selectedModel === m.id ? m.color + "60" : "#1a2540"}`,
-                    background: selectedModel === m.id ? m.color + "15" : "#0f1520",
-                  }}>
-                  <div style={{ fontSize: "11px", fontWeight: 600, color: selectedModel === m.id ? m.color : "#c8d4e0" }}>
-                    {m.icon} {m.name}
+            <label style={{ fontSize: "11px", fontWeight: 600, color: "#8899b0", display: "block", marginBottom: "4px" }}>🤖 Model per Tool</label>
+            <div style={{ fontSize: "10px", color: "#4e6380", marginBottom: "8px" }}>Each tool uses its assigned model. Heavy tasks → Opus/Pro, quick tasks → Haiku/Flash.</div>
+            <div style={{ maxHeight: "320px", overflow: "auto", border: "1px solid #1a2540", borderRadius: "6px" }}>
+              {TOOL_LIST.map(tool => {
+                const mid = toolModels[tool.key] || DEFAULT_TOOL_MODELS[tool.key];
+                const m = MODELS.find(x => x.id === mid);
+                return (
+                  <div key={tool.key} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "6px 10px", borderBottom: "1px solid #1a254020", background: "#0a0f18" }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: "11px", fontWeight: 600, color: "#e0e8f4" }}>{tool.label}</div>
+                      <div style={{ fontSize: "9px", color: "#4e6380" }}>{tool.desc}</div>
+                    </div>
+                    <select value={mid} onChange={e => {
+                      const next = { ...toolModels, [tool.key]: e.target.value };
+                      setToolModels(next);
+                      localStorage.setItem("ra_tool_models", JSON.stringify(next));
+                    }} style={{ padding: "4px 6px", borderRadius: "4px", border: "1px solid #1a2540", background: "#0f1520", color: m?.color || "#c8d4e0", fontSize: "10px", fontFamily: "monospace", outline: "none", cursor: "pointer", minWidth: "130px" }}>
+                      <optgroup label="Claude (Anthropic)">
+                        {MODELS.filter(x => x.provider === "Anthropic").map(x => <option key={x.id} value={x.id}>{x.icon} {x.name}</option>)}
+                      </optgroup>
+                      <optgroup label="Gemini (Google)">
+                        {MODELS.filter(x => x.provider === "Google").map(x => <option key={x.id} value={x.id}>{x.icon} {x.name}</option>)}
+                      </optgroup>
+                    </select>
                   </div>
-                  <div style={{ fontSize: "9px", color: "#4e6380", marginTop: "2px" }}>{m.provider} · {m.tier}</div>
-                </button>
-              ))}
+                );
+              })}
             </div>
-            <div style={{ fontSize: "10px", color: "#4e6380", marginTop: "6px" }}>
-              Selected: <span style={{ color: MODELS.find(m => m.id === selectedModel)?.color || "#00e5a0", fontWeight: 600 }}>
-                {MODELS.find(m => m.id === selectedModel)?.name || selectedModel}
-              </span>
+            <div style={{ display: "flex", gap: "6px", marginTop: "8px" }}>
+              <button onClick={() => { setToolModels({ ...DEFAULT_TOOL_MODELS }); localStorage.setItem("ra_tool_models", JSON.stringify(DEFAULT_TOOL_MODELS)); }} style={{ padding: "5px 10px", borderRadius: "4px", border: "1px solid #1a2540", background: "transparent", color: "#8899b0", fontSize: "9px", cursor: "pointer" }}>↩ Reset Defaults</button>
+              <button onClick={() => { const m = {}; TOOL_LIST.forEach(t => m[t.key] = "gemini-2.5-flash"); setToolModels(m); localStorage.setItem("ra_tool_models", JSON.stringify(m)); }} style={{ padding: "5px 10px", borderRadius: "4px", border: "1px solid #FBBC0430", background: "transparent", color: "#FBBC04", fontSize: "9px", cursor: "pointer" }}>◇ All Gemini Flash</button>
+              <button onClick={() => { const m = {}; TOOL_LIST.forEach(t => m[t.key] = "claude-opus-4-6"); setToolModels(m); localStorage.setItem("ra_tool_models", JSON.stringify(m)); }} style={{ padding: "5px 10px", borderRadius: "4px", border: "1px solid #a78bfa30", background: "transparent", color: "#a78bfa", fontSize: "9px", cursor: "pointer" }}>◆ All Opus</button>
             </div>
           </div>
 
