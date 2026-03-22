@@ -1,14 +1,12 @@
 """
-Paper Downloader — Uses Europe PMC fullTextUrlList approach (proven working).
-Called AFTER search_pubmed/search_scopus finds papers and user selects them.
-Downloads open-access PDFs to Drive. Creates compiled abstracts for the rest.
+Paper Downloader — Downloads PDFs using URLs already found by search_pubmed.
+DOES NOT re-search. Uses pdf_url from the paper object directly.
+Creates Compiled_Abstracts doc for papers without open-access PDFs.
 """
 import httpx
 import asyncio
 import random
 from typing import List, Dict
-
-EUROPMC_SEARCH = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
 
 
 async def upload_with_retry(drive, filename: str, content: bytes, mime_type: str, folder_id: str, max_retries: int = 5) -> str:
@@ -28,61 +26,33 @@ async def upload_with_retry(drive, filename: str, content: bytes, mime_type: str
 
 async def download_papers_to_drive(drive, papers: List[dict], folder_id: str) -> dict:
     """
-    Download papers that were found by search_pubmed/search_scopus.
-    For each paper: search Europe PMC by PMID/DOI → check isOpenAccess → get PDF from fullTextUrlList → download.
-    Creates Compiled_Abstracts doc for non-downloadable papers.
+    Download papers using pdf_url already attached by search_pubmed.
+    NO RE-SEARCHING. Just downloads from the URL in each paper object.
+    Papers without pdf_url go into Compiled_Abstracts doc.
     """
     downloaded = []
     no_access = []
 
     for i, paper in enumerate(papers):
-        # Rate limiting: 4-second gap between each paper
+        # Rate limiting: 4-second gap
         if i > 0:
             await asyncio.sleep(4)
 
-        pmid = paper.get("pmid", "")
-        doi = paper.get("doi", "")
         title = paper.get("title", "Unknown")
         authors = paper.get("authors", "Unknown")
-        abstract = paper.get("abstract", "")
+        pmid = paper.get("pmid", "")
+        doi = paper.get("doi", "")
         year = paper.get("year", "")
         journal = paper.get("journal", "")
+        abstract = paper.get("abstract", "")
+        pdf_url = paper.get("pdf_url")  # Already set by search_pubmed
 
-        # Build safe filename: FirstAuthor_Year.pdf
+        # Build safe filename
         first_author = "".join(c for c in authors.split(",")[0].split(" ")[0] if c.isalnum()) or "Author"
         filename = f"{first_author}_{year}.pdf"
 
-        # ── Search Europe PMC for this paper to find PDF URL ──
-        pdf_url = None
-        try:
-            query = f"EXT_ID:{pmid}" if pmid else (f"DOI:{doi}" if doi else title[:80])
-            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-                r = await client.get(EUROPMC_SEARCH, params={
-                    "query": query, "format": "json", "resultType": "core", "pageSize": 3
-                })
-                results = r.json().get("resultList", {}).get("result", [])
-
-                for res in results:
-                    if res.get("isOpenAccess") == "Y":
-                        # Get PDF URL from fullTextUrlList (proven approach)
-                        ftl = res.get("fullTextUrlList", {}).get("fullTextUrl", [])
-                        for ft in ftl:
-                            if ft.get("documentStyle") == "pdf" and ft.get("availability") == "Open access":
-                                pdf_url = ft.get("url")
-                                break
-                        # Fallback: PMC render URL
-                        if not pdf_url and res.get("pmcid"):
-                            pdf_url = f"https://europepmc.org/backend/ptpmcrender.fcgi?accid={res['pmcid']}&blobtype=pdf"
-                        # Grab abstract if we don't have one
-                        if not abstract:
-                            abstract = res.get("abstractText", "")
-                        if pdf_url:
-                            break
-        except:
-            pass
-
-        # ── Download the PDF if URL found ──
         if pdf_url:
+            # Download the PDF directly — no searching
             try:
                 async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
                     r = await client.get(pdf_url)
@@ -91,20 +61,20 @@ async def download_papers_to_drive(drive, papers: List[dict], folder_id: str) ->
                         if file_id:
                             downloaded.append({
                                 "title": title, "filename": filename, "file_id": file_id,
-                                "status": "downloaded",
+                                "status": "downloaded", "pmid": pmid,
                                 "drive_url": f"https://drive.google.com/file/d/{file_id}/view",
                             })
                             continue
             except:
                 pass
 
-        # If we get here, paper could not be downloaded
+        # Paper could not be downloaded — add to no_access list
         no_access.append({
             "title": title, "authors": authors, "abstract": abstract,
             "pmid": pmid, "doi": doi, "journal": journal, "year": year,
         })
 
-    # ── Create Compiled Abstracts doc for non-downloadable papers ──
+    # Create Compiled_Abstracts Google Doc for non-downloadable papers
     metadata_doc_url = None
     if no_access and drive and folder_id:
         html_parts = [
@@ -125,7 +95,6 @@ async def download_papers_to_drive(drive, papers: List[dict], folder_id: str) ->
                 html_parts.append(f"<h3>Abstract</h3><p>{p['abstract']}</p>")
             html_parts.append("<hr/>")
 
-        # References section
         html_parts.append("<h2>References</h2><ol>")
         for p in no_access:
             ref = f"{p['authors']}. {p['title']}. <em>{p.get('journal', '')}</em>. {p.get('year', '')}."
@@ -154,12 +123,11 @@ async def download_papers_to_drive(drive, papers: List[dict], folder_id: str) ->
 
 
 async def get_paper_full_text(drive, paper: dict, folder_id: str = None) -> dict:
-    """Get full text of a paper from Europe PMC."""
+    """Get full text of a paper from Europe PMC. NO re-searching."""
     pmid = paper.get("pmid", "")
     title = paper.get("title", "")
 
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-        # Try Europe PMC full text XML
         if pmid:
             try:
                 r = await client.get(f"https://www.ebi.ac.uk/europepmc/webservices/rest/{pmid}/fullTextXML")
@@ -172,7 +140,6 @@ async def get_paper_full_text(drive, paper: dict, folder_id: str = None) -> dict
             except:
                 pass
 
-        # Try PubMed abstract
         if pmid:
             try:
                 r = await client.get("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
@@ -188,4 +155,4 @@ async def get_paper_full_text(drive, paper: dict, folder_id: str = None) -> dict
                 pass
 
     return {"pmid": pmid, "title": title, "has_full_text": False,
-            "content": paper.get("abstract", f"[No text available for: {title}]"), "source": "None"}
+            "content": paper.get("abstract", f"[No text for: {title}]"), "source": "Cached abstract"}
