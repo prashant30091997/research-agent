@@ -347,6 +347,7 @@ class AIRouter:
     def __init__(self):
         self.anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
         self.google_key = os.getenv("GOOGLE_API_KEY", "")
+        self._session_conversations = {}  # Stores full API conversation per session
         # Auto-select default model based on available keys
         configured = os.getenv("DEFAULT_MODEL", "")
         if configured:
@@ -379,14 +380,25 @@ class AIRouter:
             file_ids = ", ".join(f.get('id','') for f in selected_files)
             system += f"\n\nThe user has selected {len(selected_files)} specific files to work with:\n{file_list}\n\nFile IDs: {file_ids}\n\nWhen the user refers to 'my files', 'these files', 'selected files', or asks to analyze/review/process files, use THESE specific files. You can read them with drive_read_file using their IDs. For code files, use understand_code. For data files, use design_pipeline. For document files (.pdf, .docx, .txt), read their content for reviews."
         
-        # Convert messages to API format
-        api_messages = []
-        for m in messages:
-            if m["role"] in ("user", "assistant"):
-                api_messages.append({"role": m["role"], "content": m["content"]})
+        # ── LOAD FULL CONVERSATION FROM SESSION (preserves tool calls/results) ──
+        session_conv = self._session_conversations.get(session_id, [])
+        
+        # Extract the new user message (last user message from frontend)
+        new_user_content = ""
+        for m in reversed(messages):
+            if m.get("role") == "user":
+                new_user_content = m.get("content", "")
+                break
+        
+        if not new_user_content:
+            return {"message": "No message received", "tool_results": []}
+        
+        # Build: stored full conversation + new user message
+        api_messages = list(session_conv)
+        api_messages.append({"role": "user", "content": new_user_content})
         
         tool_results = []
-        max_loops = 10  # prevent infinite tool loops
+        max_loops = 10
         
         for loop in range(max_loops):
             # Emit: thinking
@@ -405,6 +417,9 @@ class AIRouter:
             
             if not tool_uses:
                 final_text = "\n".join(text_blocks)
+                # Save full conversation to session (so next message has context)
+                api_messages.append({"role": "assistant", "content": response["content"]})
+                self._session_conversations[session_id] = api_messages
                 if event_queue:
                     await event_queue.put({"type": "done", "data": {"message": final_text, "tool_results": tool_results}})
                 return {"message": final_text, "tool_results": tool_results}
@@ -455,6 +470,7 @@ class AIRouter:
             api_messages.append({"role": "assistant", "content": response["content"]})
             api_messages.append({"role": "user", "content": tool_call_results})
         
+        self._session_conversations[session_id] = api_messages
         return {"message": "Reached maximum tool call limit. Please continue the conversation.", "tool_results": tool_results}
     
     async def chat_stream(self, messages, session_id="", model=None, tool_models=None, drive_token=None, working_folder_id=None, selected_files=None):
