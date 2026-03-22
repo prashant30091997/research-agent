@@ -39,6 +39,7 @@ export default function App() {
     { key: "search_pubmed", label: "🔬 PubMed Search", desc: "MeSH terms + paper search" },
     { key: "search_scopus", label: "🔬 Scopus Search", desc: "Elsevier database search" },
     { key: "download_papers", label: "⬇️ Download Papers", desc: "Find & download open-access PDFs" },
+    { key: "search_and_download", label: "🔬⬇️ Search & Download", desc: "All-in-one: search Europe PMC + download PDFs" },
     { key: "get_paper_full_text", label: "📖 Read Full Text", desc: "Extract full text from papers" },
     { key: "write_literature_review", label: "📝 Literature Review", desc: "Write comprehensive review" },
     { key: "write_section", label: "✍️ Write Section", desc: "Results, discussion, methodology" },
@@ -57,6 +58,7 @@ export default function App() {
     search_pubmed: "gemini-2.5-flash",
     search_scopus: "gemini-2.5-flash",
     download_papers: "gemini-2.5-flash-lite",
+    search_and_download: "gemini-2.5-flash",
     get_paper_full_text: "gemini-2.5-flash-lite",
     write_literature_review: "gemini-3.1-pro-preview",
     write_section: "gemini-3.1-pro-preview",
@@ -149,6 +151,9 @@ export default function App() {
   }, []);
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+  // Reload sessions whenever Drive token changes (user connects Drive)
+  useEffect(() => { if (driveToken) loadSessions(); }, [driveToken]);
 
   // ── API Helpers ──
   const api = async (path, body = {}) => {
@@ -290,7 +295,7 @@ export default function App() {
 
   const TOOL_ICONS = {
     search_pubmed: "🔬", search_scopus: "🔬", generate_mesh_terms: "🧬",
-    download_papers: "⬇️", get_paper_full_text: "📖",
+    download_papers: "⬇️", get_paper_full_text: "📖", search_and_download: "🔬",
     drive_list_folders: "📁", drive_list_files: "📂", drive_read_file: "📄", drive_create_folder: "📁",
     write_literature_review: "📝", write_section: "✍️",
     understand_code: "🧠", design_pipeline: "🏗️",
@@ -472,32 +477,52 @@ export default function App() {
 
   // ── Load Sessions ──
   const loadSessions = async () => {
+    let allSessions = [];
+    
+    // Load local sessions from backend
     try {
       const r = await fetch(`${backendUrl}/api/session/list`);
       const d = await r.json();
-      let allSessions = d.sessions || [];
-      
-      // Also load from Drive if history folder is set
-      if (driveToken && historyFolder?.id) {
-        try {
-          const dr = await api("/api/session/list_drive", { drive_token: driveToken, history_folder_id: historyFolder.id });
-          const driveSessions = dr.sessions || [];
-          // Merge: Drive sessions that aren't already local
-          const localIds = new Set(allSessions.map(s => s.id));
-          for (const ds of driveSessions) {
-            if (!localIds.has(ds.id)) {
-              allSessions.push({ ...ds, fromDrive: true });
-            } else {
-              // Mark local session as drive-synced
-              const local = allSessions.find(s => s.id === ds.id);
-              if (local) local.drive_synced = true;
-            }
-          }
-        } catch { }
-      }
-      
-      setSessions(allSessions);
+      allSessions = d.sessions || [];
     } catch { }
+    
+    // Load from Drive history folder (this is the MAIN source since Colab restarts lose local files)
+    if (driveToken && historyFolder?.id) {
+      try {
+        const dr = await api("/api/session/list_drive", { drive_token: driveToken, history_folder_id: historyFolder.id });
+        const driveSessions = dr.sessions || [];
+        const localIds = new Set(allSessions.map(s => s.id));
+        for (const ds of driveSessions) {
+          if (!localIds.has(ds.id)) {
+            allSessions.push({ ...ds, fromDrive: true });
+          } else {
+            const local = allSessions.find(s => s.id === ds.id);
+            if (local) local.drive_synced = true;
+          }
+        }
+      } catch { }
+    } else if (driveToken && !historyFolder) {
+      // No history folder set — try to find one automatically
+      try {
+        const q = "name='ResearchAgent_History' and mimeType='application/vnd.google-apps.folder' and trashed=false";
+        const r = await fetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=1&supportsAllDrives=true&includeItemsFromAllDrives=true`, {
+          headers: { "Authorization": `Bearer ${driveToken}` },
+        });
+        const d = await r.json();
+        if (d.files?.length > 0) {
+          const folder = d.files[0];
+          setHistoryFolder(folder);
+          localStorage.setItem("ra_history_folder", JSON.stringify(folder));
+          // Now load sessions from it
+          const dr = await api("/api/session/list_drive", { drive_token: driveToken, history_folder_id: folder.id });
+          allSessions = [...allSessions, ...(dr.sessions || []).map(s => ({ ...s, fromDrive: true }))];
+        }
+      } catch { }
+    }
+    
+    // Sort by most recent first
+    allSessions.sort((a, b) => (b.created || 0) - (a.created || 0));
+    setSessions(allSessions);
   };
 
   const loadSession = async (session) => {
