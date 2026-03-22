@@ -666,12 +666,14 @@ class AIRouter:
                 return await drive.create_folder(params.get("name"), params.get("parent_id") or folder_id)
             
             elif name == "write_literature_review":
+                from tools.academic_write import write_literature_review
                 return await write_literature_review(
                     self, params.get("topic", ""), params.get("papers", []),
                     instructions=params.get("instructions", ""), model=tool_model
                 )
             
             elif name == "write_section":
+                from tools.academic_write import write_results, write_discussion
                 section = params.get("section", "results")
                 topic = params.get("topic", "")
                 context = params.get("context", "")
