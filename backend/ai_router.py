@@ -245,19 +245,6 @@ TOOLS = [
             "required": ["papers"]
         }
     },
-    {
-        "name": "search_and_download",
-        "description": "ALL-IN-ONE: Search Europe PMC for papers AND download open-access PDFs in one step. This is the PREFERRED tool when user asks to search and download papers. It searches Europe PMC (which has the best open-access coverage), finds PDF URLs from fullTextUrlList, downloads them to Drive with retry logic, and creates a Compiled_Abstracts doc for non-downloadable papers. Use this instead of separate search_pubmed + download_papers calls.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Search query for academic papers"},
-                "folder_id": {"type": "string", "description": "Drive folder ID to save papers in"},
-                "min_papers": {"type": "integer", "description": "Minimum number of papers to try to download (default 10)"}
-            },
-            "required": ["query"]
-        }
-    },
 ]
 
 SYSTEM_PROMPT = """You are ResearchAgent — an AI research assistant that helps academics with literature search, paper writing, data analysis, and document creation.
@@ -266,8 +253,7 @@ You have access to these tools:
 - search_pubmed: Search PubMed for papers (free, no key needed)
 - search_scopus: Search Scopus for papers (needs API key)
 - generate_mesh_terms: Generate optimized MeSH search terms from a topic
-- download_papers: DOWNLOAD full-text PDFs from PubMed Central, Unpaywall, Europe PMC. Saves PDFs to user's Google Drive folder. USE THIS when user asks to download papers.
-- search_and_download: ALL-IN-ONE tool — searches Europe PMC AND downloads open-access PDFs in one step. THIS IS THE PREFERRED TOOL when user asks to "search and download papers" or "find and download papers". Creates Compiled_Abstracts doc for non-downloadable papers.
+- download_papers: DOWNLOAD full-text PDFs using Europe PMC. For each paper found by search_pubmed, it checks Europe PMC for open-access PDF via fullTextUrlList, downloads with retry, saves to Drive. Creates Compiled_Abstracts doc for non-downloadable papers. 4-sec delay between downloads.
 - get_paper_full_text: READ the actual full text of papers from Europe PMC and PubMed. Use this BEFORE writing a review so you have real paper content.
 - drive_list_folders / drive_list_files / drive_read_file / drive_create_folder: Browse and manage Google Drive
 - write_literature_review: Write comprehensive lit review from papers (use AFTER get_paper_full_text)
@@ -282,13 +268,11 @@ You have access to these tools:
 - query_site_info: Get info about institutional resources
 
 CRITICAL WORKFLOW — When user asks to search AND download papers:
-PREFERRED: Use search_and_download tool (does everything in one call)
-OR step by step:
 1. generate_mesh_terms → get MeSH terms for the topic
-2. search_pubmed → find papers
-3. PRESENT papers to user → let them select
-4. download_papers → download selected papers
-5. get_paper_full_text → read actual content
+2. search_pubmed (and search_scopus if key available) → find papers
+3. PRESENT papers to user → let them select which ones
+4. download_papers → for each selected paper, searches Europe PMC for open-access PDF, downloads to Drive folder. Non-downloadable papers get compiled into a Compiled_Abstracts Google Doc.
+5. get_paper_full_text → read actual content of downloaded/available papers
 6. write_literature_review → write review using REAL paper content
 7. create_google_doc → save the review to Drive
 
@@ -310,6 +294,8 @@ CRITICAL RULES:
 NEVER:
 - Say you cannot download papers (you CAN, use download_papers)
 - Say you only have metadata/abstracts (use get_paper_full_text for full content)
+- Ask the user for a folder ID or where to save files — the working folder is ALREADY SET, just use it
+- Ask the user to provide a Drive folder — you already have it
 - Run all tasks automatically without user input
 - Create files without confirming with user
 - Hallucinate paper titles or citations"""
@@ -322,7 +308,6 @@ def _summarize_input(tool_name, tool_input):
         "search_scopus": lambda i: f"Searching Scopus for: \"{i.get('query','')[:60]}\"",
         "generate_mesh_terms": lambda i: f"Generating MeSH terms for: \"{i.get('topic','')[:60]}\"",
         "download_papers": lambda i: f"Downloading {len(i.get('papers',[]))} papers to Drive",
-        "search_and_download": lambda i: f"Searching & downloading papers for: \"{i.get('query','')[:50]}\"",
         "get_paper_full_text": lambda i: f"Reading full text of {len(i.get('papers',[]))} papers",
         "drive_list_folders": lambda i: f"Listing Drive folders{': '+i['query'] if i.get('query') else ''}",
         "drive_list_files": lambda i: f"Listing files in folder",
@@ -384,7 +369,7 @@ class AIRouter:
         # Add working folder context if set
         system = SYSTEM_PROMPT
         if working_folder_id:
-            system += f"\n\nThe user has selected a working folder (Drive ID: {working_folder_id}). Use this folder_id for all file operations unless they specify otherwise."
+            system += f"\n\n⚠️ ACTIVE WORKING FOLDER: The user has already selected a working folder with Drive ID: {working_folder_id}. You MUST use this folder_id for ALL file operations — downloads, doc creation, everything. NEVER ask the user for a folder ID. NEVER ask 'where should I save'. Just use folder_id={working_folder_id} directly in every tool call that needs a folder. This is already set."
         
         # Add selected files context
         if selected_files:
@@ -726,14 +711,6 @@ class AIRouter:
                 target_folder = params.get("folder_id") or folder_id
                 if not target_folder: return {"error": "No working folder selected — select a folder first"}
                 return await download_papers_to_drive(drive, params.get("papers", []), target_folder)
-            
-            elif name == "search_and_download":
-                if not drive_token: return {"error": "Drive not connected"}
-                from tools.paper_download import search_and_download
-                drive = DriveOps(drive_token)
-                target_folder = params.get("folder_id") or folder_id
-                if not target_folder: return {"error": "No working folder selected"}
-                return await search_and_download(drive, params.get("query", ""), target_folder, params.get("min_papers", 10))
             
             elif name == "get_paper_full_text":
                 from tools.paper_download import get_paper_full_text
