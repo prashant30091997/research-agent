@@ -26,10 +26,11 @@ export default function App() {
     { id: "claude-opus-4-6", name: "Opus 4.6", full: "Claude Opus 4.6", icon: "◆", color: "#a78bfa", tier: "Flagship", provider: "Anthropic" },
     { id: "claude-sonnet-4-20250514", name: "Sonnet 4", full: "Claude Sonnet 4", icon: "●", color: "#34d399", tier: "Balanced", provider: "Anthropic" },
     { id: "claude-haiku-4-5-20251001", name: "Haiku 4.5", full: "Claude Haiku 4.5", icon: "▲", color: "#60a5fa", tier: "Fast", provider: "Anthropic" },
-    { id: "gemini-3.1-pro", name: "Gem 3.1 Pro", full: "Gemini 3.1 Pro", icon: "◇", color: "#4285F4", tier: "Flagship", provider: "Google" },
-    { id: "gemini-3-flash", name: "Gem 3 Flash", full: "Gemini 3 Flash", icon: "◇", color: "#EA4335", tier: "Balanced", provider: "Google" },
+    { id: "gemini-3.1-pro-preview", name: "Gem 3.1 Pro", full: "Gemini 3.1 Pro", icon: "◇", color: "#4285F4", tier: "Flagship", provider: "Google" },
+    { id: "gemini-3-flash-preview", name: "Gem 3 Flash", full: "Gemini 3 Flash", icon: "◇", color: "#EA4335", tier: "Balanced", provider: "Google" },
     { id: "gemini-2.5-flash", name: "Gem 2.5 Flash", full: "Gemini 2.5 Flash", icon: "◇", color: "#FBBC04", tier: "Fast", provider: "Google" },
-    { id: "gemini-2.5-flash-lite", name: "Gem Lite", full: "Gemini 2.5 Lite", icon: "◇", color: "#FBBC04", tier: "Budget", provider: "Google" },
+    { id: "gemini-2.5-flash-lite", name: "Gem 2.5 Lite", full: "Gemini 2.5 Flash Lite", icon: "◇", color: "#FBBC04", tier: "Budget", provider: "Google" },
+    { id: "gemini-3.1-flash-lite-preview", name: "Gem 3.1 Lite", full: "Gemini 3.1 Flash Lite", icon: "◇", color: "#34A853", tier: "Cheapest", provider: "Google" },
   ];
 
   // ── PER-TOOL MODEL ROUTING ──
@@ -52,25 +53,33 @@ export default function App() {
   ];
 
   const DEFAULT_TOOL_MODELS = {
-    chat: "claude-sonnet-4-20250514",
-    search_pubmed: "claude-sonnet-4-20250514",
-    search_scopus: "claude-sonnet-4-20250514",
-    download_papers: "claude-haiku-4-5-20251001",
-    get_paper_full_text: "claude-haiku-4-5-20251001",
-    write_literature_review: "claude-opus-4-6",
-    write_section: "claude-opus-4-6",
-    understand_code: "claude-opus-4-6",
-    design_pipeline: "claude-opus-4-6",
-    create_google_doc: "claude-sonnet-4-20250514",
-    create_google_sheet: "claude-sonnet-4-20250514",
-    create_google_slides: "claude-sonnet-4-20250514",
-    generate_colab_notebook: "claude-sonnet-4-20250514",
-    fetch_site_documents: "claude-sonnet-4-20250514",
-    drive_ops: "claude-haiku-4-5-20251001",
+    chat: "gemini-2.5-flash",
+    search_pubmed: "gemini-2.5-flash",
+    search_scopus: "gemini-2.5-flash",
+    download_papers: "gemini-2.5-flash-lite",
+    get_paper_full_text: "gemini-2.5-flash-lite",
+    write_literature_review: "gemini-3.1-pro-preview",
+    write_section: "gemini-3.1-pro-preview",
+    understand_code: "gemini-3.1-pro-preview",
+    design_pipeline: "gemini-3.1-pro-preview",
+    create_google_doc: "gemini-2.5-flash",
+    create_google_sheet: "gemini-2.5-flash",
+    create_google_slides: "gemini-2.5-flash",
+    generate_colab_notebook: "gemini-2.5-flash",
+    fetch_site_documents: "gemini-2.5-flash",
+    drive_ops: "gemini-2.5-flash-lite",
   };
 
   const [toolModels, setToolModels] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("ra_tool_models")) || DEFAULT_TOOL_MODELS; }
+    try {
+      const cached = JSON.parse(localStorage.getItem("ra_tool_models"));
+      // Reset if cached models contain old wrong IDs
+      if (cached && JSON.stringify(cached).includes("gemini-3.1-pro\"")) {
+        localStorage.removeItem("ra_tool_models");
+        return DEFAULT_TOOL_MODELS;
+      }
+      return cached || DEFAULT_TOOL_MODELS;
+    }
     catch { return DEFAULT_TOOL_MODELS; }
   });
 
@@ -987,7 +996,8 @@ export default function App() {
             </div>
             <div style={{ display: "flex", gap: "6px", marginTop: "8px" }}>
               <button onClick={() => { setToolModels({ ...DEFAULT_TOOL_MODELS }); localStorage.setItem("ra_tool_models", JSON.stringify(DEFAULT_TOOL_MODELS)); }} style={{ padding: "5px 10px", borderRadius: "4px", border: "1px solid #1a2540", background: "transparent", color: "#8899b0", fontSize: "9px", cursor: "pointer" }}>↩ Reset Defaults</button>
-              <button onClick={() => { const m = {}; TOOL_LIST.forEach(t => m[t.key] = "gemini-2.5-flash"); setToolModels(m); localStorage.setItem("ra_tool_models", JSON.stringify(m)); }} style={{ padding: "5px 10px", borderRadius: "4px", border: "1px solid #FBBC0430", background: "transparent", color: "#FBBC04", fontSize: "9px", cursor: "pointer" }}>◇ All Gemini Flash</button>
+              <button onClick={() => { const m = {}; TOOL_LIST.forEach(t => m[t.key] = "gemini-2.5-flash"); setToolModels(m); localStorage.setItem("ra_tool_models", JSON.stringify(m)); }} style={{ padding: "5px 10px", borderRadius: "4px", border: "1px solid #FBBC0430", background: "transparent", color: "#FBBC04", fontSize: "9px", cursor: "pointer" }}>◇ All Gem Flash</button>
+              <button onClick={() => { const m = {}; TOOL_LIST.forEach(t => m[t.key] = "gemini-3.1-pro-preview"); setToolModels(m); localStorage.setItem("ra_tool_models", JSON.stringify(m)); }} style={{ padding: "5px 10px", borderRadius: "4px", border: "1px solid #4285F430", background: "transparent", color: "#4285F4", fontSize: "9px", cursor: "pointer" }}>◇ All Gem Pro</button>
               <button onClick={() => { const m = {}; TOOL_LIST.forEach(t => m[t.key] = "claude-opus-4-6"); setToolModels(m); localStorage.setItem("ra_tool_models", JSON.stringify(m)); }} style={{ padding: "5px 10px", borderRadius: "4px", border: "1px solid #a78bfa30", background: "transparent", color: "#a78bfa", fontSize: "9px", cursor: "pointer" }}>◆ All Opus</button>
             </div>
           </div>
