@@ -20,6 +20,18 @@ export default function App() {
   const [driveToken, setDriveToken] = useState("");
   const [driveConnected, setDriveConnected] = useState(false);
   const [workingFolder, setWorkingFolder] = useState(null);
+  const [selectedModel, setSelectedModel] = useState(localStorage.getItem("ra_model") || "claude-sonnet-4-20250514");
+
+  // Available models
+  const MODELS = [
+    { id: "claude-opus-4-6", name: "Claude Opus 4.6", icon: "◆", color: "#a78bfa", tier: "Flagship", provider: "Anthropic" },
+    { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4", icon: "●", color: "#34d399", tier: "Balanced", provider: "Anthropic" },
+    { id: "claude-haiku-4-5-20251001", name: "Claude Haiku 4.5", icon: "▲", color: "#60a5fa", tier: "Fast", provider: "Anthropic" },
+    { id: "gemini-3.1-pro", name: "Gemini 3.1 Pro", icon: "◇", color: "#4285F4", tier: "Flagship", provider: "Google" },
+    { id: "gemini-3-flash", name: "Gemini 3 Flash", icon: "◇", color: "#EA4335", tier: "Balanced", provider: "Google" },
+    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", icon: "◇", color: "#FBBC04", tier: "Fast", provider: "Google" },
+    { id: "gemini-2.5-flash-lite", name: "Gemini 2.5 Lite", icon: "◇", color: "#FBBC04", tier: "Budget", provider: "Google" },
+  ];
 
   // ── Sidebar ──
   const [showHistory, setShowHistory] = useState(false);
@@ -78,6 +90,7 @@ export default function App() {
       const result = await api("/api/chat", {
         session_id: sessionId,
         messages: newMessages.map(m => ({ role: m.role, content: m.content })),
+        model: selectedModel,
         drive_token: driveToken,
         working_folder_id: workingFolder?.id,
       });
@@ -230,7 +243,31 @@ export default function App() {
       </div>);
     }
 
-    return null; // Don't render unknown tool results
+    if (t === "download_papers" && data.summary) {
+      return (<div style={{ margin: "8px 0", padding: "10px", borderRadius: "8px", background: "#0f1a20", border: "1px solid #1a4040" }}>
+        <div style={{ fontSize: "11px", fontWeight: 700, color: "#22d3ee", marginBottom: "6px" }}>⬇️ Paper Downloads</div>
+        <div style={{ fontSize: "11px", color: "#c8d4e0", marginBottom: "4px" }}>{data.summary}</div>
+        {(data.downloaded || []).map((p, i) => (
+          <div key={i} style={{ fontSize: "10px", color: "#34d399", padding: "2px 0" }}>
+            ✅ {p.filename} {p.url && <a href={p.url} target="_blank" rel="noreferrer" style={{ color: "#60a5fa", marginLeft: "4px" }}>Open ↗</a>}
+          </div>
+        ))}
+        {(data.no_access || []).map((p, i) => (
+          <div key={i} style={{ fontSize: "10px", color: "#fbbf24", padding: "2px 0" }}>⚠️ No open-access: {p.title?.slice(0, 60)}</div>
+        ))}
+      </div>);
+    }
+
+    if (t === "get_paper_full_text" && Array.isArray(data)) {
+      const withText = data.filter(p => p.has_full_text);
+      const abstracts = data.filter(p => !p.has_full_text && p.content && !p.content.startsWith("[No"));
+      return (<div style={{ margin: "8px 0", padding: "8px", borderRadius: "6px", background: "#0f1520", border: "1px solid #1a3540", fontSize: "11px" }}>
+        <div style={{ fontWeight: 600, color: "#22d3ee", marginBottom: "4px" }}>📖 Paper Content Retrieved</div>
+        <div style={{ color: "#8899b0" }}>{withText.length} full-text, {abstracts.length} abstracts, {data.length - withText.length - abstracts.length} unavailable</div>
+      </div>);
+    }
+
+    return null;
   };
 
   // ── Render Message Content (with Markdown-ish formatting) ──
@@ -322,7 +359,17 @@ export default function App() {
         {/* Header */}
         <div style={{ padding: "10px 20px", borderBottom: "1px solid #1a2540", display: "flex", justifyContent: "space-between", alignItems: "center", background: "#0a0f18" }}>
           <div style={{ fontSize: "12px", color: "#8899b0" }}>Session: <span style={{ color: "#00e5a0", fontFamily: "monospace" }}>{sessionId?.slice(0, 20)}</span></div>
-          <div style={{ fontSize: "10px", color: "#4e6380" }}>Backend: <span style={{ color: backendUrl.includes("localhost") ? "#fbbf24" : "#34d399" }}>{backendUrl.slice(0, 40)}</span></div>
+          <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+            <div style={{ fontSize: "10px", display: "flex", alignItems: "center", gap: "4px" }}>
+              <span style={{ color: MODELS.find(m => m.id === selectedModel)?.color || "#00e5a0" }}>
+                {MODELS.find(m => m.id === selectedModel)?.icon || "●"}
+              </span>
+              <span style={{ color: MODELS.find(m => m.id === selectedModel)?.color || "#c8d4e0", fontWeight: 600 }}>
+                {MODELS.find(m => m.id === selectedModel)?.name || selectedModel}
+              </span>
+            </div>
+            <div style={{ fontSize: "10px", color: "#4e6380" }}>Backend: <span style={{ color: backendUrl.includes("localhost") ? "#fbbf24" : "#34d399" }}>{backendUrl.slice(0, 40)}</span></div>
+          </div>
         </div>
 
         {/* Messages */}
@@ -425,6 +472,31 @@ export default function App() {
               placeholder="123456-abc.apps.googleusercontent.com"
               style={{ width: "100%", padding: "8px 12px", borderRadius: "6px", border: "1px solid #1a2540", background: "#0f1520", color: "#e0e8f4", fontSize: "12px", outline: "none", boxSizing: "border-box", fontFamily: "monospace" }}
             />
+          </div>
+
+          {/* Model Selection */}
+          <div style={{ marginBottom: "16px" }}>
+            <label style={{ fontSize: "11px", fontWeight: 600, color: "#8899b0", display: "block", marginBottom: "8px" }}>🤖 AI Model</label>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px" }}>
+              {MODELS.map(m => (
+                <button key={m.id} onClick={() => { setSelectedModel(m.id); localStorage.setItem("ra_model", m.id); }}
+                  style={{
+                    padding: "8px 10px", borderRadius: "6px", cursor: "pointer", textAlign: "left",
+                    border: `1px solid ${selectedModel === m.id ? m.color + "60" : "#1a2540"}`,
+                    background: selectedModel === m.id ? m.color + "15" : "#0f1520",
+                  }}>
+                  <div style={{ fontSize: "11px", fontWeight: 600, color: selectedModel === m.id ? m.color : "#c8d4e0" }}>
+                    {m.icon} {m.name}
+                  </div>
+                  <div style={{ fontSize: "9px", color: "#4e6380", marginTop: "2px" }}>{m.provider} · {m.tier}</div>
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: "10px", color: "#4e6380", marginTop: "6px" }}>
+              Selected: <span style={{ color: MODELS.find(m => m.id === selectedModel)?.color || "#00e5a0", fontWeight: 600 }}>
+                {MODELS.find(m => m.id === selectedModel)?.name || selectedModel}
+              </span>
+            </div>
           </div>
 
           <button onClick={() => { localStorage.setItem("ra_backend_url", backendUrl); setShowSettings(false); alert("Settings saved!"); }}
