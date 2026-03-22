@@ -1,7 +1,7 @@
 """Code Understanding & Pipeline Design Tools"""
 from typing import List, Dict
 
-async def understand_code(ai_router, code_files: List[Dict], data_files: List[Dict] = None, query: str = "") -> dict:
+async def understand_code(ai_router, code_files: List[Dict], data_files: List[Dict] = None, query: str = "", model: str = None) -> dict:
     """Read actual code file contents and analyze with AI"""
     code_text = []
     for cf in code_files[:5]:
@@ -32,7 +32,7 @@ Explain:
     result = await ai_router._call_ai(
         "Expert code analyst. Provide thorough analysis of research code.",
         [{"role": "user", "content": prompt}],
-        ai_router.default_model, use_tools=False
+        model or ai_router.default_model, use_tools=False
     )
     text = "".join(b.get("text", "") for b in result.get("content", []) if b.get("type") == "text")
     return {"analysis": text, "files_analyzed": len(code_text)}
