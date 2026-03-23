@@ -224,7 +224,7 @@ TOOLS = [
     },
     {
         "name": "download_papers",
-        "description": "Download PDFs of papers that were found by search_pubmed. Each paper already has a pdf_url attached (found during search). This tool just downloads from those URLs — it does NOT search again. Papers without pdf_url are compiled into a Compiled_Abstracts Google Doc with titles, abstracts, and references. Use 4-sec delays. Exponential backoff for Drive uploads. IMPORTANT: Pass the EXACT paper objects returned by search_pubmed — they contain pdf_url.",
+        "description": "Download PDFs of selected papers to Drive. For each paper, tries 5 strategies to find PDF: (1) PMC direct URL, (2) NCBI PMC URL, (3) Europe PMC fullTextUrlList, (4) Unpaywall, (5) DOI-based. Also creates a Paper_Compilation Google Doc with abstracts and clickable download links for ALL papers (both downloaded and not). Pass the paper objects from the user's selection.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -253,7 +253,7 @@ You have access to these tools:
 - search_pubmed: Search PubMed for papers (free, no key needed)
 - search_scopus: Search Scopus for papers (needs API key)
 - generate_mesh_terms: Generate optimized MeSH search terms from a topic
-- download_papers: Download PDFs of papers found by search_pubmed. Each paper ALREADY has pdf_url from search. This tool just downloads — it does NOT search again. Pass the EXACT paper objects from search_pubmed. Creates Compiled_Abstracts doc for non-downloadable papers.
+- download_papers: Download PDFs to Drive. Finds PDF URLs using 5 strategies (PMC direct, NCBI PMC, fullTextUrlList, Unpaywall, DOI). Creates Paper_Compilation doc with ALL abstracts + clickable links for manual download.
 - get_paper_full_text: READ the actual full text of papers from Europe PMC and PubMed. Use this BEFORE writing a review so you have real paper content.
 - drive_list_folders / drive_list_files / drive_read_file / drive_create_folder: Browse and manage Google Drive
 - write_literature_review: Write comprehensive lit review from papers (use AFTER get_paper_full_text)
@@ -267,16 +267,14 @@ You have access to these tools:
 - fetch_site_documents: Find documents from ICMR, WHO, NIH, CDC, IEEE, arXiv, etc.
 - query_site_info: Get info about institutional resources
 
-CRITICAL WORKFLOW — When user asks to search AND download papers:
-1. generate_mesh_terms → get MeSH terms for the topic
-2. search_pubmed (and search_scopus if key available) → find papers. IMPORTANT: search_pubmed already checks Europe PMC for each paper and attaches pdf_url if open-access.
-3. PRESENT papers to user with their pdf availability → let them select which ones
-4. download_papers → pass the EXACT selected paper objects (they already contain pdf_url). This tool ONLY downloads from the attached URLs. It does NOT search again.
-5. get_paper_full_text → read actual content of papers
-6. write_literature_review → write review using REAL paper content. ONLY cite papers from the user's selected list. NEVER cite papers not in the list.
+CRITICAL WORKFLOW — When user asks to search, download, and review papers:
+1. generate_mesh_terms → get MeSH terms
+2. search_pubmed (and search_scopus if available) → find papers (fast, no PDF lookup)
+3. PRESENT papers → let user select
+4. download_papers → finds PDF URLs (5 strategies: PMC direct, NCBI PMC, fullTextUrlList, Unpaywall, DOI) → downloads to Drive → creates Paper_Compilation doc with ALL abstracts + clickable links
+5. get_paper_full_text → reads downloaded PDFs text + abstracts. Papers with PDFs AND abstracts will appear in both — the AI should deduplicate by title when writing.
+6. write_literature_review → write review using ALL content. Deduplicate: if a paper has full text from PDF, use that; if only abstract, use abstract. ONLY cite papers from the user's selected list.
 7. create_google_doc → save the review to Drive
-
-CRITICAL: When writing a literature review, ONLY use and cite papers that were in the user's selected list. Do NOT hallucinate or add papers that were not found by search_pubmed. Every reference must correspond to a paper the user selected.
 
 CRITICAL RULES:
 - You CAN download papers. Use the download_papers tool. NEVER say "I cannot download papers".
@@ -347,8 +345,10 @@ class AIRouter:
     def __init__(self):
         self.anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
         self.google_key = os.getenv("GOOGLE_API_KEY", "")
-        self._session_conversations = {}  # Stores full API conversation per session
-        # Auto-select default model based on available keys
+        # Session memory: text history + structured data (papers, analysis, etc.)
+        self._session_history = {}   # session_id → [{"role":"user","content":"..."}, ...]
+        self._session_context = {}   # session_id → {"papers": [...], "review": "...", ...}
+        # Auto-select default model
         configured = os.getenv("DEFAULT_MODEL", "")
         if configured:
             self.default_model = configured
@@ -359,67 +359,127 @@ class AIRouter:
         else:
             self.default_model = "gemini-2.5-flash"
     
+    def _build_context_prompt(self, session_id: str) -> str:
+        """Build a context string from session data (papers found, files analyzed, etc.)"""
+        ctx = self._session_context.get(session_id, {})
+        parts = []
+        
+        if ctx.get("papers"):
+            papers = ctx["papers"]
+            parts.append(f"\n\nSESSION CONTEXT — {len(papers)} papers found in this session:")
+            for i, p in enumerate(papers, 1):
+                line = f"{i}. {p.get('title','')} ({p.get('authors','')}, {p.get('year','')}) PMID:{p.get('pmid','')} DOI:{p.get('doi','')}"
+                if p.get("pdf_url"): line += " [PDF AVAILABLE]"
+                else: line += " [NO PDF]"
+                parts.append(line)
+            parts.append("\nWhen user says 'download all' or 'use all papers', pass these EXACT paper objects to the download_papers tool. They already have pdf_url attached.")
+        
+        if ctx.get("downloaded"):
+            parts.append(f"\nDOWNLOADED: {len(ctx['downloaded'])} papers saved to Drive folder.")
+        
+        if ctx.get("review"):
+            parts.append(f"\nLITERATURE REVIEW: Already written ({len(ctx['review'])} chars). User may ask to modify it.")
+        
+        if ctx.get("code_analysis"):
+            parts.append(f"\nCODE ANALYSIS: Done. {ctx['code_analysis'][:200]}...")
+        
+        if ctx.get("pipeline"):
+            parts.append(f"\nPIPELINE: Designed. User may ask to generate notebook.")
+        
+        return "\n".join(parts) if parts else ""
+    
+    def _store_tool_result(self, session_id: str, tool_name: str, result):
+        """Store structured data from tool results in session context."""
+        ctx = self._session_context.setdefault(session_id, {})
+        
+        if tool_name == "search_pubmed" and isinstance(result, list):
+            existing = {p.get("pmid") for p in ctx.get("papers", [])}
+            for p in result:
+                if p.get("pmid") not in existing:
+                    ctx.setdefault("papers", []).append(p)
+        
+        elif tool_name == "search_scopus" and isinstance(result, list):
+            ctx.setdefault("papers", []).extend(result)
+        
+        elif tool_name == "download_papers" and isinstance(result, dict):
+            ctx["downloaded"] = result.get("downloaded", [])
+            ctx["download_summary"] = result.get("summary", "")
+        
+        elif tool_name == "write_literature_review" and isinstance(result, dict):
+            ctx["review"] = result.get("content", "")[:500]
+        
+        elif tool_name == "understand_code" and isinstance(result, dict):
+            ctx["code_analysis"] = result.get("analysis", "")[:500]
+        
+        elif tool_name == "design_pipeline" and isinstance(result, dict):
+            ctx["pipeline"] = result.get("pipeline", {})
+        
+        elif tool_name == "create_google_doc" and isinstance(result, dict):
+            ctx["last_doc"] = result.get("url", "")
+        
+        elif tool_name == "generate_mesh_terms" and isinstance(result, dict):
+            ctx["mesh_terms"] = result.get("mesh_terms", [])
+    
     async def chat(self, messages: List[Dict], session_id: str = "", model: str = None,
                    tool_models: Dict[str, str] = None, drive_token: str = None, working_folder_id: str = None,
                    selected_files: List[Dict] = None, event_queue=None) -> Dict:
         """
-        Main chat loop with tool calling.
-        Uses per-tool model routing when tool_models is provided.
+        Main chat loop. Uses TEXT-ONLY conversation history (works with both Anthropic and Gemini).
+        Structured data (papers, analysis) stored separately and injected as context.
         """
         model = model or self.default_model
-        self._tool_models = tool_models or {}  # Store for use in _execute_tool
+        self._tool_models = tool_models or {}
         
-        # Add working folder context if set
+        # Build system prompt with all context
         system = SYSTEM_PROMPT
         if working_folder_id:
-            system += f"\n\n⚠️ ACTIVE WORKING FOLDER: The user has already selected a working folder with Drive ID: {working_folder_id}. You MUST use this folder_id for ALL file operations — downloads, doc creation, everything. NEVER ask the user for a folder ID. NEVER ask 'where should I save'. Just use folder_id={working_folder_id} directly in every tool call that needs a folder. This is already set."
-        
-        # Add selected files context
+            system += f"\n\nACTIVE WORKING FOLDER (Drive ID): {working_folder_id}. Use this for ALL file operations. NEVER ask user for folder ID."
         if selected_files:
-            file_list = "\n".join(f"- {f.get('name','')} ({f.get('cat','')}, {f.get('ext','')})" for f in selected_files)
-            file_ids = ", ".join(f.get('id','') for f in selected_files)
-            system += f"\n\nThe user has selected {len(selected_files)} specific files to work with:\n{file_list}\n\nFile IDs: {file_ids}\n\nWhen the user refers to 'my files', 'these files', 'selected files', or asks to analyze/review/process files, use THESE specific files. You can read them with drive_read_file using their IDs. For code files, use understand_code. For data files, use design_pipeline. For document files (.pdf, .docx, .txt), read their content for reviews."
+            file_list = ", ".join(f"{f.get('name','')}" for f in selected_files)
+            system += f"\n\nSELECTED FILES: {file_list}"
         
-        # ── LOAD FULL CONVERSATION FROM SESSION (preserves tool calls/results) ──
-        session_conv = self._session_conversations.get(session_id, [])
+        # Inject session context (papers found, analysis done, etc.)
+        system += self._build_context_prompt(session_id)
         
-        # Extract the new user message (last user message from frontend)
+        # Build API messages from text-only history + new message
+        history = self._session_history.get(session_id, [])
+        
         new_user_content = ""
         for m in reversed(messages):
             if m.get("role") == "user":
                 new_user_content = m.get("content", "")
                 break
-        
         if not new_user_content:
             return {"message": "No message received", "tool_results": []}
         
-        # Build: stored full conversation + new user message
-        api_messages = list(session_conv)
+        # Build clean API messages: text history + new user message
+        api_messages = []
+        for h in history:
+            api_messages.append({"role": h["role"], "content": h["content"]})
         api_messages.append({"role": "user", "content": new_user_content})
         
         tool_results = []
         max_loops = 10
         
         for loop in range(max_loops):
-            # Emit: thinking
             if event_queue:
-                await event_queue.put({"type": "status", "data": {"step": "thinking", "message": f"AI is analyzing your request (loop {loop+1})...", "model": model}})
+                await event_queue.put({"type": "status", "data": {"step": "thinking", "message": f"AI analyzing request (loop {loop+1})...", "model": model}})
             
-            # Call AI
             response = await self._call_ai(system, api_messages, model, use_tools=True)
             
             if not response:
                 return {"message": "Error: No response from AI", "tool_results": tool_results}
             
-            # Check if AI wants to use a tool
             tool_uses = [b for b in response.get("content", []) if b.get("type") == "tool_use"]
             text_blocks = [b.get("text", "") for b in response.get("content", []) if b.get("type") == "text"]
             
             if not tool_uses:
+                # Final text response — save to history and return
                 final_text = "\n".join(text_blocks)
-                # Save full conversation to session (so next message has context)
-                api_messages.append({"role": "assistant", "content": response["content"]})
-                self._session_conversations[session_id] = api_messages
+                history.append({"role": "user", "content": new_user_content})
+                history.append({"role": "assistant", "content": final_text})
+                self._session_history[session_id] = history
+                
                 if event_queue:
                     await event_queue.put({"type": "done", "data": {"message": final_text, "tool_results": tool_results}})
                 return {"message": final_text, "tool_results": tool_results}
@@ -431,13 +491,9 @@ class AIRouter:
                 tool_input = tool_use["input"]
                 tool_id = tool_use["id"]
                 
-                # Get per-tool model
                 tool_model = self._tool_models.get(tool_name) or self._tool_models.get("chat") or self.default_model
                 if tool_name.startswith("drive_"): tool_model = self._tool_models.get("drive_ops") or tool_model
-                model_info = tool_model.split("-")
-                model_short = tool_model
                 
-                # Emit: tool starting
                 if event_queue:
                     await event_queue.put({"type": "tool_start", "data": {
                         "tool": tool_name, "model": tool_model,
@@ -445,34 +501,43 @@ class AIRouter:
                         "message": f"Running {tool_name}..."
                     }})
                 
-                # Execute the tool
-                import time
-                t0 = time.time()
+                import time as _time
+                t0 = _time.time()
                 result = await self._execute_tool(tool_name, tool_input, drive_token, working_folder_id)
-                elapsed = round(time.time() - t0, 1)
+                elapsed = round(_time.time() - t0, 1)
+                
+                # Store structured data from this tool result
+                self._store_tool_result(session_id, tool_name, result)
                 
                 tool_results.append({"tool": tool_name, "input": tool_input, "result": result, "model": tool_model, "time": elapsed})
                 
-                # Emit: tool done
                 if event_queue:
                     await event_queue.put({"type": "tool_done", "data": {
                         "tool": tool_name, "model": tool_model, "time": elapsed,
                         "result_summary": _summarize_result(tool_name, result),
                     }})
                 
+                # Truncate result for API message (keep under 4KB per tool result)
+                result_str = json.dumps(result) if isinstance(result, (dict, list)) else str(result)
+                if len(result_str) > 4000:
+                    result_str = result_str[:4000] + "...[truncated]"
+                
                 tool_call_results.append({
                     "type": "tool_result",
                     "tool_use_id": tool_id,
-                    "content": json.dumps(result) if isinstance(result, (dict, list)) else str(result)
+                    "content": result_str
                 })
             
-            # Add assistant response + tool results to conversation
+            # Add this exchange to api_messages for the current turn's tool loop
             api_messages.append({"role": "assistant", "content": response["content"]})
             api_messages.append({"role": "user", "content": tool_call_results})
         
-        self._session_conversations[session_id] = api_messages
-        return {"message": "Reached maximum tool call limit. Please continue the conversation.", "tool_results": tool_results}
-    
+        # Hit max loops — save what we have
+        history.append({"role": "user", "content": new_user_content})
+        history.append({"role": "assistant", "content": "Reached maximum tool call limit."})
+        self._session_history[session_id] = history
+        return {"message": "Reached maximum tool call limit. Please continue.", "tool_results": tool_results}
+
     async def chat_stream(self, messages, session_id="", model=None, tool_models=None, drive_token=None, working_folder_id=None, selected_files=None):
         """Streaming version — yields SSE events as tools execute"""
         import asyncio
@@ -730,17 +795,46 @@ class AIRouter:
                 drive = DriveOps(drive_token)
                 target_folder = params.get("folder_id") or folder_id
                 if not target_folder: return {"error": "No working folder selected — select a folder first"}
-                return await download_papers_to_drive(drive, params.get("papers", []), target_folder)
+                
+                # Enrich AI's paper objects with full data from session context
+                # (AI often passes minimal objects like {title, pmid} — we need authors, abstract, pdf_url)
+                ai_papers = params.get("papers", [])
+                ctx_papers = self._session_context.get(session_id, {}).get("papers", [])
+                ctx_by_pmid = {p.get("pmid"): p for p in ctx_papers if p.get("pmid")}
+                ctx_by_title = {p.get("title", "").lower()[:50]: p for p in ctx_papers}
+                
+                enriched = []
+                for ap in ai_papers:
+                    # Try to find the full paper in session context
+                    full = ctx_by_pmid.get(ap.get("pmid")) or ctx_by_title.get(ap.get("title", "").lower()[:50])
+                    if full:
+                        # Merge: use session context data, but let AI overrides win
+                        merged = {**full}
+                        for k, v in ap.items():
+                            if v and v != "Unknown" and v != "":
+                                merged[k] = v
+                        enriched.append(merged)
+                    else:
+                        enriched.append(ap)
+                
+                return await download_papers_to_drive(drive, enriched, target_folder)
             
             elif name == "get_paper_full_text":
                 from tools.paper_download import get_paper_full_text
                 drive_obj = DriveOps(drive_token) if drive_token else None
                 papers = params.get("papers", [])
-                results = []
+                # Enrich with session context data
+                ctx_papers = self._session_context.get(session_id, {}).get("papers", [])
+                ctx_by_pmid = {p.get("pmid"): p for p in ctx_papers if p.get("pmid")}
+                enriched = []
                 for p in papers[:10]:
+                    full = ctx_by_pmid.get(p.get("pmid"))
+                    enriched.append({**(full or {}), **{k:v for k,v in p.items() if v}})
+                results = []
+                for p in enriched:
                     ft = await get_paper_full_text(drive_obj, p)
                     results.append(ft)
-                    await asyncio.sleep(1)  # Gentle delay
+                    await asyncio.sleep(1)
                 return results
             
             else:
